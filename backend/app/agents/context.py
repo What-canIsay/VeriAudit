@@ -1,0 +1,68 @@
+"""Shared execution context passed to every agent node."""
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from ..db import session_scope
+from ..events import emit as bus_emit
+from ..models import AgentRun, ToolInvocation
+
+
+class AuditContext:
+    def __init__(self, task_id: str, root: Path, depth: str) -> None:
+        self.task_id = task_id
+        self.root = root
+        self.depth = depth
+        self.state: Dict[str, Any] = {
+            "profile": {}, "entrypoints": [], "candidates": [], "findings": [],
+            "rejected": [], "notes": [],
+        }
+        self.current_agent = "system"
+
+    async def emit(self, event: str, data: dict) -> None:
+        await bus_emit(self.task_id, event, data)
+
+    async def start_agent(self, agent: str, node: str) -> str:
+        self.current_agent = agent
+        run_id = None
+        with session_scope() as s:
+            run = AgentRun(task_id=self.task_id, agent=agent, node=node, status="running")
+            s.add(run)
+            s.flush()
+            run_id = run.id
+        await self.emit("agent.started", {"agent": agent, "node": node, "run_id": run_id})
+        return run_id
+
+    async def finish_agent(self, run_id: str, output: dict) -> None:
+        with session_scope() as s:
+            run = s.get(AgentRun, run_id)
+            if run:
+                run.status = "completed"
+                run.output = output
+                run.finished_at = datetime.now(timezone.utc)
+        await self.emit("agent.finished", {"run_id": run_id, "output": output})
+
+    async def log_tool(self, run_id: Optional[str], tool: str, args: dict,
+                       summary: dict, ok: bool = True) -> None:
+        with session_scope() as s:
+            s.add(ToolInvocation(task_id=self.task_id, agent_run_id=run_id,
+                                 agent=self.current_agent, tool=tool, args=args,
+                                 result_summary=summary, ok=ok))
+        await self.emit("tool.invoked", {"run_id": run_id, "agent": self.current_agent,
+                                          "tool": tool, "args_brief": _brief(args)})
+        await self.emit("tool.result", {"run_id": run_id, "tool": tool, "ok": ok,
+                                        "summary": summary})
+
+    async def think(self, run_id: Optional[str], text: str) -> None:
+        await self.emit("agent.thinking", {"run_id": run_id, "text": text})
+
+
+def _brief(args: dict) -> dict:
+    out = {}
+    for k, v in (args or {}).items():
+        sv = str(v)
+        out[k] = sv[:80] + ("…" if len(sv) > 80 else "")
+    return out

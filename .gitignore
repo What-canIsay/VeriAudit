@@ -1,1 +1,17 @@
 .claude
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+backend/.env
+backend/_data/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# misc
+.DS_Store
+*.log
