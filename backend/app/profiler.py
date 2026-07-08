@@ -32,6 +32,8 @@ _CEIL = {
     "max_candidates": 120,
     "max_verify": 60,
     "llm_triage_limit": 40,
+    "agentic_verify_limit": 12,
+    "validator_steps": 22,
     "provisioner_max_steps": 48,
     "provisioner_timeout_sec": 1800,
     "provisioner_cmd_timeout_sec": 600,
@@ -163,6 +165,12 @@ def assess(root: Path, depth: str) -> Tuple[Dict, Dict]:
         "llm_triage_limit": _scale(t, fl.llm_triage_limit, _CEIL["llm_triage_limit"]),
         "dynamic_verification": depth in ("standard", "deep") and fl.enable_sandbox,
         "llm_augment": depth in ("standard", "deep"),
+        # heavy agentic verification: scales with BOTH audit surface and provisioning
+        # complexity (auth-gated / DB-backed apps need it more), only meaningful in deep.
+        "agentic_verify_limit": _scale(max(t, pt), fl.agentic_verify_limit, _CEIL["agentic_verify_limit"]),
+        # auth-gated / DB-backed apps (high pt) need a longer per-candidate budget for the
+        # multi-step seed→login→inject→observe reproduction workflow.
+        "validator_steps": _scale(max(t, pt), fl.validator_steps, _CEIL["validator_steps"]),
         # provisioning
         "provisioner_max_steps": _scale(pt, fl.provisioner_max_steps, _CEIL["provisioner_max_steps"]),
         "provisioner_timeout_sec": _scale(pt, fl.provisioner_timeout_sec, _CEIL["provisioner_timeout_sec"]),
@@ -208,6 +216,8 @@ def _static_budget(depth: str) -> Dict:
         "llm_triage_limit": settings.llm_triage_limit,
         "dynamic_verification": depth in ("standard", "deep") and settings.enable_sandbox,
         "llm_augment": depth in ("standard", "deep"),
+        "agentic_verify_limit": settings.agentic_verify_limit,
+        "validator_steps": settings.validator_steps,
         "provisioner_max_steps": settings.provisioner_max_steps,
         "provisioner_timeout_sec": settings.provisioner_timeout_sec,
         "provisioner_cmd_timeout_sec": settings.provisioner_cmd_timeout_sec,

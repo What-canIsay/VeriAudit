@@ -158,6 +158,9 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `ENABLE_CODEQL` | `false` | CodeQL 语义分析（重，深度档；需安装 codeql） |
 | `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（自适应下限；控 token） |
 | `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（自适应下限；控 token） |
+| `ENABLE_AGENTIC_VERIFY` | `true` | **深度核验**：对高危/严重且可复现的候选，验证官自主读全上下文 + 在常驻应用上用专业工具实弹复现（仅 deep + 已搭建环境时触发） |
+| `AGENTIC_VERIFY_LIMIT` | `3` | 每任务进入深度核验的候选数上限（自适应下限；控 token） |
+| `VALIDATOR_STEPS` | `12` | 单个候选深度核验的工具步数上限（自适应下限；鉴权类复现需要更多步） |
 | `LLM_TIMEOUT_SEC` / `LLM_NUM_RETRIES` | 90 / 1 | LLM 请求超时与重试（自适应下限；防挂起） |
 | `MAX_CANDIDATES` / `MAX_VERIFY` | 60 / 30 | 预算护栏（自适应下限） |
 | `TASK_TIMEOUT_SEC` | `1800` | 单任务总超时（自适应下限；自动放大以覆盖各阶段预算之和） |
@@ -175,6 +178,17 @@ VeriAudit 的漏洞猎手（LLM）可**自主调用**以下专业工具（各司
 | **CodeQL** | 语义数据流分析（精度，深度档） | 下载 CodeQL CLI，置于 PATH，并设 `ENABLE_CODEQL=true` |
 | **Gitleaks** | 硬编码密钥/凭据 | 下载 gitleaks 二进制 |
 | **OSV-Scanner** | 依赖已知 CVE（SCA） | 下载 osv-scanner 二进制 |
+
+**验证官的动态核验/复现工具**（deep 档、环境已搭建时可用；已预装在沙箱镜像 `veriaudit-sandbox-env-*` 内，无需宿主安装）：
+
+| 工具 | 职责 |
+|---|---|
+| **http_probe** | 向常驻应用发精确请求复现漏洞，自动带 Cookie（可先登录再打受鉴权接口） |
+| **sqlmap** | SQL 注入的确认/利用（含盲注/时间盲注） |
+| **nuclei** | 模板化验证配置/暴露类问题（CORS 错配、路径遍历、调试端点暴露等） |
+| **strace** | 运行时系统调用观测（是否真的 `open('/etc/passwd')` / `execve('/bin/sh')`） |
+| **sql_log** | 白盒 SQL 观测：开启 MySQL 通用日志，看 payload 产生的真实 SQL（盲注/二阶注入的决定性证据） |
+| **mysql 客户端** | 查/建/seed 数据、为受鉴权接口创建测试账号 |
 
 > 云端模式下，模型依据审计方法论**自行决定**调用哪些工具；无任何工具时仍可仅凭 LLM 阅读代码 + 内置规则完成审计。**模型的思考过程与结构化输出会实时显示在前端时间线**，便于追溯漏洞挖掘全过程。
 
@@ -198,7 +212,8 @@ VeriAudit/
 │  │  ├─ profiler.py         规模评估：按项目复杂度计算各阶段预算上限
 │  │  ├─ orchestrator.py     评估 + 七阶段编排状态机
 │  │  ├─ llm/gateway.py      LiteLLM 网关（+ Mock 回落，含步数将尽的收尾提示）
-│  │  ├─ agents/             planner/recon/hunter/tracer/provisioner/validator/reporter + tools/prompts/context
+│  │  ├─ agents/             planner/recon/hunter/tracer/provisioner/validator/reporter
+│  │  │                       + tools（挖掘）/verify_tools（深度核验+动态复现）/provision_tools/prompts/context
 │  │  └─ api/routes.py       REST + SSE 路由
 │  └─ scripts/smoke.py       离线端到端冒烟测试
 └─ frontend/

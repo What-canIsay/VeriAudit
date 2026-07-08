@@ -20,7 +20,7 @@ from ..knowledge import SEVERITY_ORDER, rule_by_id
 from ..llm.gateway import llm
 from ..models import Artifact, EvidenceChain, Finding
 from ..severity import score_from_vector
-from . import prompts
+from . import prompts, verify_tools
 from .context import AuditContext
 
 _TRUSTED_ORIGINS = {"semgrep", "codeql", "gitleaks", "osv"}
@@ -37,6 +37,9 @@ async def run(ctx: AuditContext) -> dict:
     max_verify = budget.get("max_verify", settings.max_verify)
     do_dynamic = budget.get("dynamic_verification", False)
     llm_left = budget.get("llm_triage_limit", settings.llm_triage_limit)
+    agentic_left = budget.get("agentic_verify_limit", settings.agentic_verify_limit)
+    env = ctx.state.get("env")
+    env_ready = bool(env and env.get("ready"))
 
     cands = sorted(ctx.state.get("candidates", []), key=_priority)
     confirmed = suspected = rejected = dyn = 0
@@ -49,12 +52,33 @@ async def run(ctx: AuditContext) -> dict:
             await ctx.emit("finding.rejected", {"vuln_type": c["vuln_type"], "location": c["location"]})
             continue
 
-        # decide whether to spend an LLM judge on this candidate (economy)
+        rule = rule_by_id(c.get("rule_id", ""))
         deterministic = c.get("rule_id") in _DETERMINISTIC_RULES or c.get("origin") in ("gitleaks", "osv")
-        use_llm = llm.enabled and not deterministic and llm_left > 0
-        if use_llm:
-            llm_left -= 1
-        verdict = await _static_verify(ctx, run_id, c, use_llm)
+        # Escalate worthy candidates (high/critical, reproducible, standing env) to the
+        # agentic Validator: it reads cross-file context + drives dynamic tools to build a
+        # precise PoC and actually trigger the bug. Bounded by agentic_verify_limit.
+        escalate = (llm.enabled and settings.enable_agentic_verify and env_ready
+                    and agentic_left > 0 and not deterministic and rule and rule.get("reproducible")
+                    and c.get("_severity") in ("critical", "high"))
+
+        if escalate:
+            agentic_left -= 1
+            await ctx.think(run_id, f"对 {c['vuln_type']} 进行深度核验：读全上下文 + 在常驻应用上实弹复现。")
+            verdict, dynamic = await _agentic_verify(ctx, run_id, c, env)
+        else:
+            use_llm = llm.enabled and not deterministic and llm_left > 0
+            if use_llm:
+                llm_left -= 1
+            verdict = await _static_verify(ctx, run_id, c, use_llm)
+            dynamic = None
+            want_dyn = verdict.get("want_dynamic", True)
+            if verdict["verdict"] != "rejected" and do_dynamic and want_dyn and rule and rule.get("reproducible"):
+                if env_ready:
+                    await ctx.think(run_id, f"向常驻应用环境发起 PoC 复现 {c['vuln_type']} …")
+                    dynamic = await asyncio.to_thread(sandbox.reproduce_via_env, ctx.root, c, env)
+                if dynamic is None:   # no standing env, or env-probe not applicable → ephemeral boot
+                    await ctx.think(run_id, f"在隔离沙箱中尝试复现 {c['vuln_type']} …")
+                    dynamic = await asyncio.to_thread(sandbox.try_reproduce, ctx.root, c)
 
         if verdict["verdict"] == "rejected":
             rejected += 1
@@ -62,17 +86,7 @@ async def run(ctx: AuditContext) -> dict:
             await ctx.emit("finding.rejected", {"vuln_type": c["vuln_type"], "location": c["location"]})
             continue
 
-        dynamic = None
-        rule = rule_by_id(c.get("rule_id", ""))
-        want_dyn = verdict.get("want_dynamic", True)
-        if do_dynamic and want_dyn and rule and rule.get("reproducible"):
-            env = ctx.state.get("env")
-            if env and env.get("ready"):
-                await ctx.think(run_id, f"向常驻应用环境发起 PoC 复现 {c['vuln_type']} …")
-                dynamic = await asyncio.to_thread(sandbox.reproduce_via_env, ctx.root, c, env)
-            if dynamic is None:   # no standing env, or env-probe not applicable → ephemeral boot
-                await ctx.think(run_id, f"在隔离沙箱中尝试复现 {c['vuln_type']} …")
-                dynamic = await asyncio.to_thread(sandbox.try_reproduce, ctx.root, c)
+        if dynamic:
             await ctx.emit("sandbox.poc_attempt", {"vuln_type": c["vuln_type"],
                                                    "attempted": dynamic.get("attempted"),
                                                    "reproduced": dynamic.get("reproduced")})
@@ -94,6 +108,69 @@ async def run(ctx: AuditContext) -> dict:
     await ctx.emit("verify.ready", out)
     await ctx.finish_agent(run_id, out)
     return out
+
+
+async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict):
+    """Deep verification: the model reads full context and drives dynamic tools against
+    the standing app to build a precise PoC and truly reproduce. Returns (verdict, dynamic)."""
+    sink = c["location"]
+    b = ctx.state.get("budget", {})
+    steps = b.get("validator_steps", settings.validator_steps)
+    # reuse setup (test creds / login flow / schema) discovered by an earlier candidate,
+    # and the persistent cookie jar, so later verifications skip cold-start rediscovery.
+    setup = ctx.state.get("verify_setup")
+    reuse = (f"\n【可复用的搭建/鉴权上下文（前一漏洞核验已建立，勿重复发现）】：{setup}\n"
+             f"容器内 /tmp/vjar 保存着上一次的会话 Cookie，http_probe 会自动携带，可直接复用登录态。\n"
+             if setup else "")
+    user = (f"待核验候选：{c['vuln_type']}\n位置：{sink['file']}:{sink['line']}\n"
+            f"来源：{c.get('origin')}  自评置信度：{c.get('self_confidence')}\n"
+            f"发现理由：{c.get('rationale', '')}\n污点线索：\n{_taint_text(c)}\n\n"
+            f"sink 附近代码：\n{_code_window(ctx.root, c)}\n\n"
+            f"应用已在容器内运行（端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
+            + reuse +
+            f"请深度核验并尽力实弹复现，最后调用 conclude（若你搭建了可复用的账号/会话，请在 setup_notes 中说明）。")
+    result: dict = {}
+
+    def on_step(reasoning, content, tool_names):
+        ctx.emit_reasoning_sync(run_id, reasoning=reasoning,
+                                output=(content if content and not tool_names else None), kind="verify")
+
+    def on_tool(name, args, res):
+        if name == "conclude":
+            result.update(args or {})
+            note = (args or {}).get("setup_notes")
+            if note and not ctx.state.get("verify_setup"):
+                ctx.state["verify_setup"] = note[:1200]
+        summ = {k: res.get(k) for k in ("status", "exit_code", "ok", "note", "reproduced")
+                if isinstance(res, dict) and k in res}
+        ctx.log_tool_sync(run_id, name, args, summ or {"via": "verify"},
+                          ok="error" not in (res or {}))
+
+    finalize_hint = "步数即将用尽，请立即基于现有证据调用 conclude 给出结论（verdict / reproduced / 精确 PoC）。"
+    await asyncio.to_thread(lambda: llm.agentic(
+        "validator", prompts.VALIDATOR_AGENTIC, user, verify_tools.TOOL_SCHEMAS,
+        lambda n, a: verify_tools.dispatch(env, ctx, n, a, sink),
+        on_tool=on_tool, on_step=on_step, max_steps=steps, stop_tools={"conclude"},
+        finalize_hint=finalize_hint, finalize_at=2,
+        timeout=b.get("llm_timeout_sec"), num_retries=b.get("llm_num_retries")))
+
+    v = result.get("verdict")
+    if v not in ("confirmed", "suspected", "rejected"):
+        v = "suspected"   # ended without a clear verdict → conservative (avoid false-negative)
+    verdict = {"verdict": v, "want_dynamic": False,
+               "confidence_reason": result.get("confidence_reason")
+               or result.get("evidence") or "深度核验：读全上下文并在常驻应用上实弹验证。",
+               "poc": result.get("poc", ""), "remediation": result.get("remediation", "")}
+    dynamic = None
+    if result.get("reproduced"):
+        dynamic = {"attempted": True, "reproduced": True, "poc_code": result.get("poc", ""),
+                   "request": None, "observation": result.get("evidence") or "验证官在常驻应用上实弹复现成功。",
+                   "sandbox_log": (result.get("evidence") or "")[:1800], "reason": None}
+    elif result:
+        dynamic = {"attempted": True, "reproduced": False,
+                   "observation": result.get("confidence_reason") or "未能在预算内实弹复现（静态结论有效）。",
+                   "reason": None}
+    return verdict, dynamic
 
 
 async def _static_verify(ctx: AuditContext, run_id, c: dict, use_llm: bool) -> dict:

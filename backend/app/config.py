@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     enable_adaptive_budget: bool = True
     llm_hunt_steps: int = 16              # max tool-calling steps for the LLM-driven hunt
     llm_triage_limit: int = 16            # max candidates the LLM validator judges (rest heuristic)
+    # agentic validation: for worthy candidates the Validator reads cross-file context
+    # + drives dynamic tools (sqlmap/nuclei/runtime debugging) against the standing app
+    # to precisely CONFIRM/reproduce. Bounded like the hunt loop to keep token spend sane.
+    enable_agentic_verify: bool = True
+    agentic_verify_limit: int = 3         # max candidates that get the heavy agentic verify (floor)
+    validator_steps: int = 12             # per-candidate agentic-verify tool-step cap (floor)
     max_agent_steps: int = 12             # generic per-agent loop cap
     max_candidates: int = 60              # cap candidates per task
     max_verify: int = 30                  # cap validations per task

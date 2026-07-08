@@ -21,6 +21,7 @@ Disk/security notes:
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import random
 import re
@@ -37,24 +38,37 @@ from .knowledge import rule_by_id
 
 _BASE_IMAGE = "python:3.11-slim"
 _CLI_IMAGE = {"python": "python:3.11-slim", "javascript": "node:20-slim"}
-# "-env": provisioning/web-repro image with a universal toolchain pre-baked. Tag is
-# bumped from the old "-web" (curl-only) so it rebuilds once with the richer layer.
-_WEB_IMAGE_TAG = f"{settings.sandbox_image_prefix}-env"
 _SKIP_TAR = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".idea"}
 
-# Pre-install the tools EVERY provisioning run would otherwise waste steps/tokens
-# discovering it lacks and installing by hand: a C/C++ build toolchain, git, download
-# tools, unzip, pkg-config, ps. These are language-agnostic and don't cause dependency
-# conflicts. Language runtimes / DB servers (php, mysql, node…) are NOT baked in (they
-# would bloat the image and vary per project) — the Provisioner apt-installs those on
-# demand, which now works because the container keeps the caps apt/dpkg need.
+# The provisioning / verification / web-repro image. Two layers of pre-baked tooling
+# every run would otherwise waste steps+tokens discovering it lacks:
+#   1) universal build/dev toolchain (gcc/make/git/curl/wget/unzip/pkg-config/ps) —
+#      language-agnostic, no dependency conflicts.
+#   2) the Validator's professional verification/reproduction tools: sqlmap (SQLi
+#      confirm/exploit), strace (syscall-level runtime debugging), mysql client (query /
+#      seed / white-box general-log), jq, and nuclei (templated config/exposure checks,
+#      best-effort download).
+# Language runtimes / DB SERVERS (php, mysql-server, node…) are NOT baked in (they bloat
+# the image and vary per project) — the Provisioner apt-installs those on demand, which
+# works because the container keeps the caps apt/dpkg need.
 _WEB_DOCKERFILE = (
     "FROM python:3.11-slim\n"
     "ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1\n"
     "RUN apt-get update && apt-get install -y --no-install-recommends "
     "build-essential git curl wget unzip ca-certificates pkg-config procps "
+    "strace default-mysql-client jq sqlmap "
     "&& rm -rf /var/lib/apt/lists/*\n"
+    # nuclei: best-effort (build never fails if the download is unavailable)
+    "RUN NURL=$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest "
+    "| grep -o 'https://[^\"]*linux_amd64.zip' | head -1); "
+    "( [ -n \"$NURL\" ] && curl -sL \"$NURL\" -o /tmp/n.zip && unzip -o /tmp/n.zip -d /usr/local/bin nuclei "
+    "&& chmod +x /usr/local/bin/nuclei ) || true\n"
 )
+
+# tag carries a short hash of the Dockerfile → auto-rebuilds when the recipe changes,
+# reuses the cached image otherwise.
+_WEB_IMAGE_TAG = (f"{settings.sandbox_image_prefix}-env-"
+                  + hashlib.md5(_WEB_DOCKERFILE.encode()).hexdigest()[:8])
 
 # Caps the persistent PROVISIONING container needs so `apt-get install` (dpkg chowns
 # files) and services that drop root (mysql/apache → setuid/setgid) actually work.
