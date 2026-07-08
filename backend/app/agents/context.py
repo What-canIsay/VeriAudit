@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..db import session_scope
 from ..events import emit as bus_emit
+from ..events import emit_threadsafe
 from ..models import AgentRun, ToolInvocation
 
 
@@ -58,6 +59,40 @@ class AuditContext:
 
     async def think(self, run_id: Optional[str], text: str) -> None:
         await self.emit("agent.thinking", {"run_id": run_id, "text": text})
+
+    # --- thread-safe variants (called from inside asyncio.to_thread worker) --- #
+    def log_tool_sync(self, run_id: Optional[str], tool: str, args: dict,
+                      summary: dict, ok: bool = True) -> None:
+        with session_scope() as s:
+            s.add(ToolInvocation(task_id=self.task_id, agent_run_id=run_id,
+                                 agent=self.current_agent, tool=tool, args=args,
+                                 result_summary=summary, ok=ok))
+        emit_threadsafe(self.task_id, "tool.invoked", {
+            "run_id": run_id, "agent": self.current_agent, "tool": tool,
+            "args_brief": _brief(args)})
+        emit_threadsafe(self.task_id, "tool.result", {
+            "run_id": run_id, "tool": tool, "ok": ok, "summary": summary})
+
+    def emit_reasoning_sync(self, run_id: Optional[str], reasoning: Optional[str] = None,
+                            output: Optional[str] = None, kind: str = "think") -> None:
+        if reasoning:
+            emit_threadsafe(self.task_id, "agent.reasoning", {
+                "run_id": run_id, "agent": self.current_agent, "kind": kind,
+                "text": reasoning[:6000]})
+        if output:
+            emit_threadsafe(self.task_id, "agent.llm_output", {
+                "run_id": run_id, "agent": self.current_agent, "text": output[:4000]})
+        if reasoning or output:
+            with session_scope() as s:
+                s.add(ToolInvocation(task_id=self.task_id, agent_run_id=run_id,
+                                     agent=self.current_agent, tool="llm_call",
+                                     args={"kind": kind},
+                                     result_summary={"reasoning": (reasoning or "")[:1200],
+                                                     "output": (output or "")[:600]}))
+
+    async def emit_reasoning(self, run_id: Optional[str], reasoning: Optional[str] = None,
+                             output: Optional[str] = None, kind: str = "think") -> None:
+        self.emit_reasoning_sync(run_id, reasoning, output, kind)
 
 
 def _brief(args: dict) -> dict:

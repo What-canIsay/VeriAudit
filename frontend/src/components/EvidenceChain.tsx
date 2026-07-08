@@ -20,6 +20,11 @@ export default function EvidenceChain({ f }: { f: Finding }) {
         </div>
         <h3 className="font-mono text-sm text-fg break-all">{f.title}</h3>
         <div className="text-xs text-faint font-mono mt-1">{f.vuln_type} · {f.cvss_vector}</div>
+        {ev?.static_verdict?.origin && ev.static_verdict.origin !== "llm" && (
+          <div className="text-[11px] text-faint mt-1">
+            发现来源：<span className="text-sky-400 font-mono">{String(ev.static_verdict.origin)}</span>
+          </div>
+        )}
       </div>
 
       {/* ① 位置 */}

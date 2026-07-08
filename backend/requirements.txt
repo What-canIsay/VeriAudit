@@ -6,3 +6,5 @@ pydantic-settings>=2.1
 litellm>=1.40
 python-multipart>=0.0.9
 jinja2>=3.1
+# Offline SAST fallback for the semgrep_scan tool (pure-Python, no network).
+bandit>=1.7

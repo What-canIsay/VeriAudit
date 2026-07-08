@@ -28,9 +28,11 @@ app.include_router(router)
 @app.on_event("startup")
 async def _startup() -> None:
     import asyncio
-    from . import orchestrator
+    from . import events, orchestrator
     init_db()
-    orchestrator.set_loop(asyncio.get_event_loop())
+    loop = asyncio.get_event_loop()
+    orchestrator.set_loop(loop)
+    events.set_loop(loop)
 
 
 @app.get("/healthz")

@@ -44,20 +44,44 @@ class Settings(BaseSettings):
     model_strong: str = "claude-opus-4-8"   # hunter / tracer / validator
     model_mid: str = "claude-opus-4-8"       # planner
     model_cheap: str = "claude-haiku-4-5"    # recon / reporter
+    llm_timeout_sec: int = 90                # per-request timeout (avoid hangs)
+    llm_num_retries: int = 1                 # bounded retries
 
-    # --- budget guardrails ---
-    max_agent_steps: int = 12             # max tool-loop iterations per agent node
-    max_candidates: int = 40              # cap candidates per task
-    max_verify: int = 20                  # cap validations per task
+    # --- budget guardrails (economy: bound token spend of an LLM-driven run) ---
+    llm_hunt_steps: int = 16              # max tool-calling steps for the LLM-driven hunt
+    llm_triage_limit: int = 16            # max candidates the LLM validator judges (rest heuristic)
+    max_agent_steps: int = 12             # generic per-agent loop cap
+    max_candidates: int = 60              # cap candidates per task
+    max_verify: int = 30                  # cap validations per task
     task_timeout_sec: int = 1800
 
     # --- sandbox ---
     enable_sandbox: bool = True           # attempt docker PoC verification if available
     sandbox_image_prefix: str = "veriaudit-sandbox"
-    sandbox_timeout_sec: int = 60
+    sandbox_timeout_sec: int = 60         # exploit request window
+    sandbox_build_timeout_sec: int = 420  # whole build+run (dep install can be slow)
+    # Repro container gets network so ARBITRARY open-source projects can install their
+    # own dependencies (pip/npm). It stays ephemeral + resource-capped + cap-drop +
+    # no host mount + used-and-thrown-away. Set false for strict no-egress (then only
+    # projects whose deps are prebaked in the image are reproducible).
+    sandbox_allow_network: bool = True
 
-    # --- external scanners (graceful degradation if missing) ---
-    enable_semgrep: bool = True
+    # --- provisioner (deep mode: stand the target app up once, reuse for all PoCs) ---
+    enable_provisioner: bool = True
+    provisioner_max_steps: int = 16       # LLM-driven setup step cap (anti-loop)
+    provisioner_timeout_sec: int = 900    # whole provisioning wall-clock budget
+    provisioner_cmd_timeout_sec: int = 240  # single setup command timeout
+    # When on, deep mode runs an extra LLM round to seed/migrate the DB EVEN IF the app
+    # is already up — so DB-dependent vulns (SQLi etc.) can be dynamically reproduced.
+    # Costs extra tokens per deep run; only fires when a DB-backed vuln candidate exists.
+    provisioner_llm_enrich: bool = False
+
+    # --- professional scanners (LLM-callable tools; graceful degradation if missing) ---
+    enable_semgrep: bool = True           # semgrep_scan  (pattern SAST, breadth)
+    enable_codeql: bool = False           # codeql_scan   (semantic dataflow, heavy; deep only)
+    enable_secret_scan: bool = True       # secret_scan   (gitleaks)
+    enable_dependency_scan: bool = True   # dependency_scan (osv-scanner)
+    scanner_timeout_sec: int = 180
 
     @property
     def mock_mode(self) -> bool:
@@ -76,6 +100,7 @@ class Settings(BaseSettings):
             "hunter": self.model_strong,
             "tracer": self.model_strong,
             "validator": self.model_strong,
+            "provisioner": self.model_mid,   # env setup is semi-mechanical — mid tier
             "reporter": self.model_cheap,
         }
         return mapping.get(role, self.model_strong)

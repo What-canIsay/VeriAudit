@@ -5,46 +5,59 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { Finding, Task } from "../types";
-import { useTaskEvents } from "../lib/useTaskEvents";
+import { useTaskEvents, timelineToEvents, type LiveEvent } from "../lib/useTaskEvents";
 import Timeline from "../components/Timeline";
 import EvidenceChain from "../components/EvidenceChain";
 import { StatCard, SeverityBar } from "../components/StatCard";
 import { SeverityBadge, ConfidenceBadge } from "../components/Badge";
 import ReportModal from "../components/ReportModal";
 
-const PHASES = ["plan", "recon", "hunt", "trace", "verify", "report"];
+const PHASES = ["plan", "recon", "hunt", "trace", "provision", "verify", "report"];
 const PHASE_LABEL: Record<string, string> = {
-  plan: "规划", recon: "侦察", hunt: "发现", trace: "追踪", verify: "验证", report: "报告",
+  plan: "规划", recon: "侦察", hunt: "发现", trace: "追踪",
+  provision: "搭建", verify: "验证", report: "报告",
 };
 
 export default function TaskConsole() {
   const { id } = useParams();
-  const { events, status, phase, counts, finished, findingIds } = useTaskEvents(id);
   const [task, setTask] = useState<Task | null>(null);
+  const [live, setLive] = useState<boolean | undefined>(undefined);
+  const [histEvents, setHistEvents] = useState<LiveEvent[]>([]);
+  const { events: liveEvents, status, phase, counts: sseCounts, finished, findingIds } =
+    useTaskEvents(id, live === true);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [selected, setSelected] = useState<Finding | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
 
   useEffect(() => {
     if (!id) return;
+    setHistEvents([]);
     api.getTask(id).then((t) => {
       setTask(t);
-      if (["succeeded", "failed"].includes(t.status)) api.findings(id).then(setFindings);
+      const done = ["succeeded", "failed"].includes(t.status);
+      setLive(!done);
+      if (done) {
+        api.findings(id).then(setFindings).catch(() => {});
+        api.timeline(id).then((items) => setHistEvents(timelineToEvents(items))).catch(() => {});
+      }
     });
   }, [id]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || live === false) return;
     if (findingIds.length > 0 || finished) api.findings(id).then(setFindings).catch(() => {});
-  }, [id, findingIds.length, finished]);
+  }, [id, live, findingIds.length, finished]);
 
   async function openFinding(fid: string) {
     const full = await api.finding(fid);
     setSelected(full);
   }
 
-  const liveStatus = status || task?.status || "running";
-  const curPhase = phase || task?.phase || "plan";
+  // finished task (revisit): drive from persisted DB state; live task: from SSE.
+  const events = live === false ? histEvents : liveEvents;
+  const liveStatus = live === false ? (task?.status || "succeeded") : (status || task?.status || "running");
+  const curPhase = live === false ? "report" : (phase || task?.phase || "plan");
+  const counts = live === false ? (task?.counts || {}) : (Object.keys(sseCounts).length ? sseCounts : task?.counts || {});
   const bys = counts.by_severity || {};
 
   return (

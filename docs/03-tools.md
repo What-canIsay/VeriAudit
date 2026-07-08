@@ -2,6 +2,29 @@
 
 智能体的能力边界由**工具**决定。VeriAudit 的工具是能力层暴露给智能体的确定性接口，统一经 `ToolCall` 调用、结构化返回、全量落库。
 
+> ## 实现状态（v0.2，已落地并端到端验证）
+>
+> 落地实现对本文档的工具集做了**贴近真实审计人员工作流**的精炼与增强，核心原则：**大模型主导（LLM-driven）**——由具备审计能力的模型自主决定用哪个工具、以什么顺序做什么；工具是手段，不反向主导模型。实际暴露给 Hunter 的工具集（每个职责独立、不重复、无充数）：
+>
+> | 工具 | 对应审计动作 | 独特职责 | 实现 |
+> |---|---|---|---|
+> | `list_files` / `read_file` / `search_code` | 通读与检索 | 定位阅读 | `agents/tools.py` |
+> | `map_attack_surface` | 摸清攻击面 | 技术栈 + 对外入口点 | `analysis.py` |
+> | `semgrep_scan` | 快速普查 | **模式** SAST（广度，多语言；离线回落 Bandit） | `scanners.py` |
+> | `codeql_scan` | 深挖数据流 | **语义数据流**分析（精度，深度档） | `scanners.py` |
+> | `secret_scan` | 查密钥 | **Gitleaks** 硬编码凭据 | `scanners.py` |
+> | `dependency_scan` | 查依赖 | **OSV-Scanner** 已知 CVE（SCA） | `scanners.py` |
+> | `analyze_dataflow` | 手工污点追踪 | 定点 source→sink + 可达性 | `analysis.py` |
+> | `search_vuln_kb` | 查资料 | 漏洞成因/利用/修复 | `knowledge.py` |
+> | `report_candidate` | 记录发现 | 提交候选供验证 | `agents/tools.py` |
+>
+> - **模型主导**：云端模式下 Hunter 是一个 LLM 智能体，自主编排上述工具挖洞（其思考过程与工具选择实时展示在前端时间线）；Mock 模式（无 Key）退化为确定性检测器 + 可用专业扫描器兜底。
+> - **降漏报**：专业工具做零成本高召回候选生成；验证官将"疑似净化但不能排除"从 REJECTED 降为 SUSPECTED（不误杀）；扩充了检测规则（XSS 拼接/SSTI/XXE/开放重定向/脆弱依赖）。
+> - **经济性**：确定性工具不耗 token；`llm_hunt_steps` 限制挖掘步数、`llm_triage_limit` 限制 LLM 判定候选数、LLM 调用带超时与有限重试。
+> - **可观测**：所有工具调用、模型 reasoning 与结构化输出全量落库并经 SSE 实时上前端。
+>
+> 下文保留了原始设计的完整工具目录（作为设计蓝本，含 SCA/沙箱等分层）；实现以上表为准。
+
 ## 0. 统一工具契约
 
 ```python

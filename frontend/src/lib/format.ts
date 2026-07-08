@@ -34,6 +34,7 @@ export const AGENT_META: Record<string, { label: string; color: string }> = {
   recon: { label: "侦察员", color: "text-sky-400" },
   hunter: { label: "漏洞猎手", color: "text-amber-400" },
   tracer: { label: "污点追踪员", color: "text-cyan-400" },
+  provisioner: { label: "环境构建官", color: "text-orange-400" },
   validator: { label: "验证官", color: "text-accent" },
   reporter: { label: "报告官", color: "text-rose-400" },
   system: { label: "系统", color: "text-muted" },

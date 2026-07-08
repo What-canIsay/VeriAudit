@@ -16,6 +16,10 @@ async def run(ctx: AuditContext) -> dict:
     reachable_n = 0
 
     for c in cands:
+        # enrich taint source for candidates that lack one (e.g. LLM/scanner-reported),
+        # so reachability + dynamic sandbox reproduction can work on them too.
+        if c.get("_source") is None:
+            await asyncio.to_thread(_enrich_source, ctx.root, c)
         taint = await asyncio.to_thread(analysis.taint_trace, ctx.root, c)
         reach = await asyncio.to_thread(analysis.reachability_check, ctx.root, c, entrypoints)
         c["taint"] = taint
@@ -38,3 +42,17 @@ async def run(ctx: AuditContext) -> dict:
     await ctx.emit("trace.ready", out)
     await ctx.finish_agent(run_id, out)
     return out
+
+
+def _enrich_source(root, c) -> None:
+    try:
+        fp = root / c["location"]["file"]
+        if not fp.exists():
+            return
+        text = analysis.read_text(fp)
+        lang = analysis.EXT_TO_LANG.get(fp.suffix.lower(), "")
+        src, _ = analysis._nearby_source(root, fp, lang, c["location"]["line"],
+                                         text.splitlines(), text)
+        c["_source"] = src
+    except Exception:
+        pass

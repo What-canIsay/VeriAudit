@@ -45,6 +45,8 @@ def _counts(findings) -> dict:
     out = {"confirmed_dynamic": 0, "confirmed_static": 0, "suspected": 0,
            "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}}
     for f in findings:
+        if f.confidence == "REJECTED":
+            continue
         if f.confidence == "CONFIRMED_DYNAMIC":
             out["confirmed_dynamic"] += 1
         elif f.confidence == "CONFIRMED_STATIC":
@@ -53,7 +55,7 @@ def _counts(findings) -> dict:
             out["suspected"] += 1
         lvl = (f.severity or {}).get("level", "info")
         out["by_severity"][lvl] = out["by_severity"].get(lvl, 0) + 1
-    out["total_findings"] = len(findings)
+    out["total_findings"] = out["confirmed_dynamic"] + out["confirmed_static"] + out["suspected"]
     return out
 
 

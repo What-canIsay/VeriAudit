@@ -10,11 +10,13 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .agents import hunter, planner, recon, reporter, tracer, validator
+from . import sandbox
+from .agents import hunter, planner, provisioner, recon, reporter, tracer, validator
 from .agents.context import AuditContext
 from .config import settings
 from .db import session_scope
 from .events import emit
+from .knowledge import rule_by_id
 from .models import AuditTask, Project
 
 _PHASES = ["plan", "recon", "hunt", "trace", "verify", "report"]
@@ -58,25 +60,38 @@ async def run_audit(task_id: str) -> None:
 
     ctx = AuditContext(task_id, root, depth)
     try:
-        await asyncio.wait_for(_pipeline(ctx, task_id), timeout=settings.task_timeout_sec)
-        await _set(task_id, status="succeeded", phase="report",
-                   finished_at=datetime.now(timezone.utc))
-        await _emit_status(task_id, "report", "succeeded")
-    except asyncio.TimeoutError:
-        await _set(task_id, status="failed", error="task timeout",
-                   finished_at=datetime.now(timezone.utc))
-        await emit(task_id, "task.finished", {"error": "timeout"})
-        return
-    except Exception as e:  # pragma: no cover
-        await _set(task_id, status="failed", error=str(e)[:500],
-                   finished_at=datetime.now(timezone.utc))
-        await emit(task_id, "task.finished", {"error": str(e)[:200]})
-        return
+        try:
+            await asyncio.wait_for(_pipeline(ctx, task_id), timeout=settings.task_timeout_sec)
+            await _set(task_id, status="succeeded", phase="report",
+                       finished_at=datetime.now(timezone.utc))
+            await _emit_status(task_id, "report", "succeeded")
+        except asyncio.TimeoutError:
+            await _set(task_id, status="failed", error="task timeout",
+                       finished_at=datetime.now(timezone.utc))
+            await emit(task_id, "task.finished", {"error": "timeout"})
+            return
+        except Exception as e:  # pragma: no cover
+            await _set(task_id, status="failed", error=str(e)[:500],
+                       finished_at=datetime.now(timezone.utc))
+            await emit(task_id, "task.finished", {"error": str(e)[:200]})
+            return
 
-    with session_scope() as s:
-        t = s.get(AuditTask, task_id)
-        counts = (t.counts or {}) if t else {}
-    await emit(task_id, "task.finished", {"counts": counts})
+        with session_scope() as s:
+            t = s.get(AuditTask, task_id)
+            counts = (t.counts or {}) if t else {}
+        await emit(task_id, "task.finished", {"counts": counts})
+    finally:
+        # tear down any persistent provisioned environment
+        await asyncio.to_thread(sandbox.stop_persistent, ctx.state.get("env"))
+
+
+def _should_provision(ctx: AuditContext) -> bool:
+    if not settings.enable_provisioner or ctx.depth != "deep":
+        return False
+    if not sandbox.docker_available():
+        return False
+    return any((rule_by_id(c.get("rule_id", "")) or {}).get("reproducible")
+               for c in ctx.state.get("candidates", []))
 
 
 async def _pipeline(ctx: AuditContext, task_id: str) -> None:
@@ -84,6 +99,8 @@ async def _pipeline(ctx: AuditContext, task_id: str) -> None:
     await _phase(task_id, "recon", recon.run, ctx)
     await _phase(task_id, "hunt", hunter.run, ctx)
     await _phase(task_id, "trace", tracer.run, ctx)
+    if _should_provision(ctx):
+        await _phase(task_id, "provision", provisioner.run, ctx)
     await _phase(task_id, "verify", validator.run, ctx)
     await _phase(task_id, "report", reporter.run, ctx)
 

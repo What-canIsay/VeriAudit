@@ -21,8 +21,10 @@ def main():
         path = workspace.prepare_local(p.id, SAMPLE)
         p.workspace_path = str(path)
         pid = p.id
+    import os as _os
+    depth = _os.environ.get("SMOKE_DEPTH", "standard")
     with session_scope() as s:
-        t = AuditTask(project_id=pid, depth="standard", status="queued", phase="queued")
+        t = AuditTask(project_id=pid, depth=depth, status="queued", phase="queued")
         s.add(t)
         s.flush()
         tid = t.id

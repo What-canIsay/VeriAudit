@@ -1,10 +1,16 @@
-"""Hunter (漏洞猎手): 高召回候选发现 = SAST候选池 + LLM语义发现 + 知识库。"""
+"""Hunter (漏洞猎手): the audit's autonomous core.
+
+Cloud mode  : the MODEL drives — it orchestrates the professional toolset
+              (semgrep/codeql/secret/dependency/dataflow/read/search) and records
+              candidates via report_candidate. Its reasoning + tool choices stream
+              live to the UI. Scanner results it gathered are not discarded.
+Mock mode   : deterministic fallback — regex detector + any available scanners.
+"""
 from __future__ import annotations
 
 import asyncio
-import json
 
-from .. import analysis
+from .. import analysis, scanners
 from ..config import settings
 from ..db import session_scope
 from ..llm.gateway import llm
@@ -16,98 +22,103 @@ from .context import AuditContext
 async def run(ctx: AuditContext) -> dict:
     run_id = await ctx.start_agent("hunter", "hunt")
     plan = ctx.state.get("plan", {})
-
-    # 1) 确定性候选池（规则 + 可选 Semgrep）
-    await ctx.think(run_id, "运行确定性检测：知识库规则匹配危险汇聚点 (scan_candidates)。")
-    cands = await asyncio.to_thread(analysis.scan_candidates, ctx.root)
-    await ctx.log_tool(run_id, "scan_candidates", {}, {"count": len(cands)})
-
-    if settings.enable_semgrep:
-        sg = await asyncio.to_thread(analysis.run_semgrep, ctx.root)
-        if sg:
-            await ctx.log_tool(run_id, "semgrep_scan", {}, {"count": len(sg)})
-            cands = _merge(cands, sg)
-
-    # 2) LLM 语义高召回增强（工具调用探索），失败自动跳过
-    if llm.enabled and plan.get("budget", {}).get("llm_augment"):
-        await ctx.think(run_id, "调用 LLM 阅读代码，补充规则遗漏的语义/逻辑类候选（高召回）。")
-        extra = await _llm_augment(ctx, run_id)
-        if extra:
-            cands = _merge(cands, extra)
-
     cap = plan.get("budget", {}).get("max_candidates", settings.max_candidates)
-    cands = cands[:cap]
 
-    # 3) 落库并写入状态
-    for c in cands:
-        with session_scope() as s:
-            row = Candidate(task_id=ctx.task_id, vuln_type=c["vuln_type"],
-                            location=c["location"], self_confidence=c["self_confidence"],
-                            rationale=c["rationale"], origin=c["origin"])
-            s.add(row)
-            s.flush()
-            c["db_id"] = row.id
-        await ctx.emit("candidate.recorded", {
-            "vuln_type": c["vuln_type"], "location": c["location"],
-            "self_confidence": c["self_confidence"], "origin": c["origin"]})
+    if llm.enabled:
+        await ctx.think(run_id, "以资深审计员的方式自主编排专业工具进行漏洞挖掘（模型主导）。")
+        await asyncio.to_thread(_llm_hunt, ctx, run_id)
+        # Trust the model's curated report_candidate list (it already judged scanner
+        # output and excluded noise). Only fall back if it produced nothing at all.
+        ctx.state.setdefault("candidates", [])
+        if not ctx.state.get("candidates"):
+            note = "模型未产出候选" + (f"（LLM 错误：{llm.last_error}）" if llm.last_error else "")
+            await ctx.think(run_id, note + "，回落确定性检测器 + 专业扫描器兜底。")
+            pool = await asyncio.to_thread(_deterministic_pool, ctx)
+            _merge(ctx.state["candidates"], pool)
+    else:
+        await ctx.think(run_id, "Mock 模式：运行确定性检测器 + 可用的专业扫描器（规则 / Semgrep / Gitleaks / OSV）。")
+        pool = await asyncio.to_thread(_deterministic_pool, ctx)
+        _merge(ctx.state.setdefault("candidates", []), pool)
 
+    cands = ctx.state.get("candidates", [])[:cap]
     ctx.state["candidates"] = cands
-    out = {"candidates": len(cands),
-           "by_origin": _count(cands, "origin")}
+
+    for c in cands:
+        if not c.get("db_id"):
+            with session_scope() as s:
+                row = Candidate(task_id=ctx.task_id, vuln_type=c["vuln_type"],
+                                location=c["location"], self_confidence=c.get("self_confidence", 0.5),
+                                rationale=c.get("rationale", ""), origin=c.get("origin", "llm"))
+                s.add(row)
+                s.flush()
+                c["db_id"] = row.id
+            if c.get("origin") != "llm":   # llm candidates already emitted live via report_candidate
+                await ctx.emit("candidate.recorded", {
+                    "vuln_type": c["vuln_type"], "location": c["location"],
+                    "self_confidence": c.get("self_confidence", 0.5), "origin": c.get("origin")})
+
+    out = {"candidates": len(cands), "by_origin": _count(cands, "origin")}
     await ctx.finish_agent(run_id, out)
     return out
 
 
-async def _llm_augment(ctx: AuditContext, run_id: str):
-    user = ("请审计该项目，寻找基于规则可能遗漏的语义/逻辑漏洞候选（认证授权、越权、业务逻辑、"
-            "跨文件数据流等）。先用工具阅读关键文件，然后仅输出一个 JSON 数组，每项："
-            "{\"vuln_type\":\"CWE-xxx 名称\",\"file\":\"相对路径\",\"line\":整数,"
-            "\"confidence\":0-1,\"rationale\":\"理由\"}。至多 8 条。")
+def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
+    profile = ctx.state.get("profile", {})
+    eps = ctx.state.get("entrypoints", [])
+    langs = profile.get("languages", {})
+    top = sorted({loc for e in eps for loc in [e["location"]["file"]]})[:12]
+    user = (f"项目语言分布：{langs}；已识别对外入口点 {len(eps)} 个。"
+            f"部分入口文件：{top}。\n"
+            f"请以资深审计员的方式自主审计本项目，发现真实安全漏洞，并对每个可疑点调用 report_candidate 登记。"
+            f"你可自由决定调用哪些工具、以什么顺序进行。")
+
+    def on_step(reasoning, content, tool_names):
+        ctx.emit_reasoning_sync(run_id, reasoning=reasoning,
+                                output=(content if content and not tool_names else None), kind="hunt")
 
     def on_tool(name, args, result):
-        # fire-and-forget logging is done post-hoc below to keep loop sync
-        ctx.state.setdefault("_hunter_tools", []).append({"tool": name, "args": args})
+        summary = {k: result.get(k) for k in ("count", "engine", "ok", "recorded", "reachability")
+                   if isinstance(result, dict) and k in result}
+        ctx.log_tool_sync(run_id, name, args, summary or {"via": "llm"}, ok="error" not in (result or {}))
 
-    try:
-        text, trace = await asyncio.to_thread(
-            llm.agentic, "hunter", prompts.HUNTER, user,
-            tools.TOOL_SCHEMAS, lambda n, a: tools.dispatch(ctx.root, n, a),
-            on_tool, 6)
-    except Exception:
-        return []
+    llm.agentic("hunter", prompts.HUNTER, user, tools.TOOL_SCHEMAS,
+                lambda n, a: tools.dispatch(ctx, n, a),
+                on_tool=on_tool, on_step=on_step, max_steps=settings.llm_hunt_steps)
 
-    for t in (ctx.state.pop("_hunter_tools", []) or []):
-        await ctx.log_tool(run_id, t["tool"], t["args"], {"via": "llm"}, True)
 
-    if not text:
-        return []
-    try:
-        import re
-        m = re.search(r"\[.*\]", text, re.S)
-        arr = json.loads(m.group(0)) if m else json.loads(text)
-    except Exception:
-        return []
+def _deterministic_pool(ctx: AuditContext):
+    root = ctx.root
+    pool = analysis.scan_candidates(root)
+    if settings.enable_semgrep:
+        pool = _merge(pool, scanners.run_semgrep(root))
+    if settings.enable_secret_scan:
+        pool = _merge(pool, scanners.run_gitleaks(root))
+    if settings.enable_dependency_scan:
+        pool = _merge(pool, scanners.run_osv(root))
+    return pool
+
+
+def _from_scan_cache(ctx: AuditContext):
     out = []
-    for item in arr[:8]:
-        try:
-            out.append({
-                "rule_id": "llm-semantic", "vuln_type": item["vuln_type"],
-                "_severity": "high", "origin": "llm",
-                "self_confidence": float(item.get("confidence", 0.5)),
-                "rationale": "LLM 语义发现：" + item.get("rationale", ""),
-                "location": {"file": item["file"], "line": int(item.get("line", 1)),
-                             "function": None, "snippet": ""},
-                "lang": "unknown", "_source": None, "_sanitized": False,
-            })
-        except Exception:
-            continue
+    for key in ("semgrep", "codeql", "gitleaks", "osv"):
+        val = ctx.state.get("_scan_cache", {}).get(key)
+        if isinstance(val, list):
+            out.extend(val)
     return out
 
 
+def _cwe(vt: str) -> str:
+    import re
+    m = re.search(r"CWE-(\d+)", vt or "")
+    return m.group(1) if m else (vt or "?")
+
+
 def _merge(base, extra):
-    seen = {(c["vuln_type"], c["location"]["file"], c["location"]["line"]) for c in base}
-    for c in extra:
-        k = (c["vuln_type"], c["location"]["file"], c["location"]["line"])
+    # dedup across scanners by (CWE, file, line) so the same issue found by multiple
+    # tools / rule labels collapses to one candidate.
+    seen = {(_cwe(c["vuln_type"]), c["location"]["file"], c["location"]["line"]) for c in base}
+    for c in extra or []:
+        k = (_cwe(c["vuln_type"]), c["location"]["file"], c["location"]["line"])
         if k not in seen:
             base.append(c)
             seen.add(k)

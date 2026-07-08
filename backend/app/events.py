@@ -34,6 +34,25 @@ def history(task_id: str) -> List[dict]:
     return list(_history.get(task_id, []))
 
 
+_loop: "asyncio.AbstractEventLoop | None" = None
+
+
+def set_loop(loop) -> None:
+    global _loop
+    _loop = loop
+
+
+def get_loop():
+    return _loop
+
+
+def emit_threadsafe(task_id: str, event: str, data: dict) -> None:
+    """Schedule an emit from a worker thread onto the main event loop (thread-safe)."""
+    loop = _loop
+    if loop is not None:
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(emit(task_id, event, data)))
+
+
 async def emit(task_id: str, event: str, data: dict) -> None:
     payload = {
         "event": event,

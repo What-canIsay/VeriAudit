@@ -146,11 +146,33 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `LLM_API_BASE` | 空 | 自建/中转 base url（可选） |
 | `MODEL_STRONG/MID/CHEAP` | opus/opus/haiku | 分角色模型 |
 | `ENABLE_SANDBOX` | `true` | 是否启用 Docker 动态验证 |
-| `SANDBOX_TIMEOUT_SEC` | `60` | 单次沙箱执行超时 |
-| `ENABLE_SEMGREP` | `true` | 是否启用 Semgrep 候选 |
-| `MAX_CANDIDATES` / `MAX_VERIFY` | 40 / 20 | 预算护栏 |
+| `SANDBOX_TIMEOUT_SEC` | `60` | 单次利用请求窗口超时 |
+| `SANDBOX_BUILD_TIMEOUT_SEC` | `420` | 复现容器总超时（含装依赖+启动） |
+| `SANDBOX_ALLOW_NETWORK` | `true` | 复现容器放开网络（仅用于装项目依赖；设 `false` 走严格无出网，则只有依赖已内置的项目可复现） |
+| `ENABLE_PROVISIONER` | `true` | 是否启用环境构建官（仅 `deep` 档生效：一次把目标应用搭起来供复用） |
+| `PROVISIONER_LLM_ENRICH` | `false` | **深度增强开关**：即使应用已起，也让模型建表/迁移/seed 数据库，从而让 **SQL 注入等 DB 依赖漏洞也能动态复现**（每次 deep 多花些 token，仅在存在 DB 相关漏洞时触发） |
+| `PROVISIONER_MAX_STEPS` / `PROVISIONER_TIMEOUT_SEC` | 16 / 900 | 搭建步数与总时长预算（防死循环/控 token） |
+| `ENABLE_SEMGREP` / `ENABLE_SECRET_SCAN` / `ENABLE_DEPENDENCY_SCAN` | `true` | 专业工具（Semgrep / Gitleaks / OSV）开关 |
+| `ENABLE_CODEQL` | `false` | CodeQL 语义分析（重，深度档；需安装 codeql） |
+| `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（控 token） |
+| `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（控 token） |
+| `LLM_TIMEOUT_SEC` / `LLM_NUM_RETRIES` | 90 / 1 | LLM 请求超时与重试（防挂起） |
+| `MAX_CANDIDATES` / `MAX_VERIFY` | 60 / 30 | 预算护栏 |
 | `TASK_TIMEOUT_SEC` | `1800` | 单任务总超时 |
 | `CORS_ORIGINS` | `*` | 允许的跨域来源 |
+
+### 专业审计工具（真实人员常用；自动探测，缺失即降级）
+
+VeriAudit 的漏洞猎手（LLM）可**自主调用**以下专业工具（各司其职、不重复）。将它们的可执行文件放入 PATH 即自动启用（`/api/v1/config` 的 `scanners` 字段显示可用性）：
+
+| 工具 | 职责 | 安装 |
+|---|---|---|
+| **Semgrep** | 多语言模式 SAST（广度） | `pipx install semgrep`（离线自动回落到内置 Bandit） |
+| **CodeQL** | 语义数据流分析（精度，深度档） | 下载 CodeQL CLI，置于 PATH，并设 `ENABLE_CODEQL=true` |
+| **Gitleaks** | 硬编码密钥/凭据 | 下载 gitleaks 二进制 |
+| **OSV-Scanner** | 依赖已知 CVE（SCA） | 下载 osv-scanner 二进制 |
+
+> 云端模式下，模型依据审计方法论**自行决定**调用哪些工具；无任何工具时仍可仅凭 LLM 阅读代码 + 内置规则完成审计。**模型的思考过程与结构化输出会实时显示在前端时间线**，便于追溯漏洞挖掘全过程。
 
 ---
 

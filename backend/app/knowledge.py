@@ -161,12 +161,14 @@ VULN_RULES: List[dict] = [
     },
     {
         "id": "xss", "cwe": "CWE-79", "name": "Reflected Cross-Site Scripting",
-        "severity": "medium", "reproducible": False,
+        "severity": "medium", "reproducible": True,
         "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
         "sinks": {
-            "python": [r"render_template_string\s*\(", r"Response\s*\([^)]*request", r"return\s+f?[\"'][^\"']*\{"],
-            "javascript": [r"\.innerHTML\s*=", r"document\.write\s*\(", r"res\.send\s*\([^)]*req\.", r"dangerouslySetInnerHTML"],
-            "php": [r"\becho\s+\$_", r"\bprint\s+\$_"],
+            "python": [r"Response\s*\([^)]*request", r"return\s+f?[\"'][^\"']*\{",
+                        r"[\"'][^\"']*<[^\"']*[\"']\s*\+", r"\+\s*request\.\w+", r"make_response\s*\([^)]*\+"],
+            "javascript": [r"\.innerHTML\s*=", r"document\.write\s*\(", r"res\.send\s*\([^)]*req\.",
+                            r"dangerouslySetInnerHTML", r"res\.write\s*\([^)]*req\."],
+            "php": [r"\becho\s+.*\$_", r"\bprint\s+.*\$_", r"printf\s*\([^)]*\$_"],
         },
         "sanitizers": {"python": [r"escape\(", r"markupsafe", r"\|\s*e\b"],
                         "javascript": [r"escapeHtml", r"DOMPurify", r"textContent"]},
@@ -184,6 +186,55 @@ VULN_RULES: List[dict] = [
         "sanitizers": {},
         "poc_hint": "N/A — static finding.",
         "remediation": "移除硬编码密钥，改用环境变量/密钥管理服务；轮换已泄露凭据；将敏感文件加入忽略清单。",
+    },
+]
+
+VULN_RULES += [
+    {
+        "id": "ssti", "cwe": "CWE-1336", "name": "Server-Side Template Injection",
+        "severity": "high", "reproducible": True,
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "sinks": {
+            "python": [r"render_template_string\s*\(", r"Template\s*\([^)]*request", r"env\.from_string\s*\("],
+            "javascript": [r"\.compile\s*\([^)]*req\.", r"template\s*\([^)]*req\."],
+        },
+        "sanitizers": {},
+        "poc_hint": "Inject `{{7*7}}` / `${7*7}`; oracle: evaluated result (49) appears in output.",
+        "remediation": "不要用用户输入拼接模板；使用固定模板 + 上下文变量传参；沙箱化模板引擎并禁用危险内置。",
+    },
+    {
+        "id": "open-redirect", "cwe": "CWE-601", "name": "Open Redirect",
+        "severity": "medium", "reproducible": False,
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N",
+        "sinks": {
+            "python": [r"redirect\s*\(\s*request", r"redirect\s*\([^)]*\+"],
+            "javascript": [r"res\.redirect\s*\([^)]*req\.", r"location\.href\s*=\s*[^;]*req"],
+            "php": [r"header\s*\(\s*[\"']Location:.*\$_"],
+        },
+        "sanitizers": {},
+        "poc_hint": "Set the redirect target to an external URL; oracle: 302 Location points off-site.",
+        "remediation": "对跳转目标做白名单/相对路径校验，拒绝外部绝对 URL 与协议相对 URL。",
+    },
+    {
+        "id": "xxe", "cwe": "CWE-611", "name": "XML External Entity",
+        "severity": "high", "reproducible": False,
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+        "sinks": {
+            "python": [r"etree\.parse\s*\(", r"etree\.fromstring\s*\(", r"xml\.dom\.minidom\.parse"],
+            "java": [r"DocumentBuilderFactory", r"SAXParserFactory", r"XMLInputFactory"],
+            "php": [r"simplexml_load_(string|file)\s*\(", r"DOMDocument"],
+        },
+        "sanitizers": {"python": [r"resolve_entities\s*=\s*False", r"defusedxml"]},
+        "poc_hint": "Submit XML with an external entity; oracle: file/SSRF content reflected.",
+        "remediation": "禁用外部实体解析（defusedxml / 设置 FEATURE_SECURE_PROCESSING、禁用 DOCTYPE）。",
+    },
+    {
+        "id": "vulnerable-dependency", "cwe": "CWE-1395", "name": "Vulnerable Dependency",
+        "severity": "high", "reproducible": False,
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "sinks": {}, "sanitizers": {},
+        "poc_hint": "See the referenced advisory (CVE/GHSA) for exploitation details.",
+        "remediation": "升级到已修复版本；如无法升级，评估是否受影响并采取缓解/替换依赖。",
     },
 ]
 

@@ -21,6 +21,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then((r) => j<Project>(r)),
+  updateProject: (id: string, body: { name?: string; source_type?: string; source_ref?: string }) =>
+    fetch(`${BASE}/projects/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => j<Project>(r)),
 
   createTask: (pid: string, body: { depth: string }) =>
     fetch(`${BASE}/projects/${pid}/tasks`, {

@@ -36,8 +36,8 @@ def user():
 @app.route("/download")
 def download():
     name = request.args.get("file")
-    # VULN: CWE-22 path traversal (user input used to open a file)
-    return send_file(open("/var/data/" + name))
+    # VULN: CWE-22 path traversal (user input concatenated into a file path)
+    return open("/var/data/" + name).read()
 
 
 @app.route("/render")

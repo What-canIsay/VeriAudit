@@ -14,7 +14,8 @@ from ..config import settings
 from ..db import get_db
 from ..models import (AgentRun, AuditTask, Candidate, EvidenceChain, Finding,
                       Project, ToolInvocation)
-from ..schemas import ProjectCreate, TaskCreate, finding_out, project_out, task_out
+from ..schemas import (ProjectCreate, ProjectUpdate, TaskCreate, finding_out,
+                       project_out, task_out)
 from ..sandbox import docker_available
 
 router = APIRouter(prefix="/api/v1")
@@ -30,9 +31,14 @@ def get_config():
         "model_tiers": {"strong": settings.model_strong, "mid": settings.model_mid,
                         "cheap": settings.model_cheap},
         "sandbox_available": docker_available(),
-        "semgrep_enabled": settings.enable_semgrep,
+        "scanners": _scanners_available(),
         "sample_path": str(sample) if sample.exists() else None,
     }
+
+
+def _scanners_available():
+    from .. import scanners
+    return scanners.available()
 
 
 # --------------------------- projects --------------------------- #
@@ -67,7 +73,12 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
 @router.get("/projects")
 def list_projects(db: Session = Depends(get_db)):
     rows = db.query(Project).order_by(desc(Project.created_at)).all()
-    return [project_out(p) for p in rows]
+    out = []
+    for p in rows:
+        tasks = (db.query(AuditTask).filter(AuditTask.project_id == p.id)
+                 .order_by(desc(AuditTask.created_at)).limit(8).all())
+        out.append({**project_out(p), "tasks": [task_out(t) for t in tasks]})
+    return out
 
 
 @router.get("/projects/{pid}")
@@ -77,6 +88,42 @@ def get_project(pid: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "project not found")
     tasks = db.query(AuditTask).filter(AuditTask.project_id == pid).order_by(desc(AuditTask.created_at)).all()
     return {**project_out(p), "tasks": [task_out(t) for t in tasks]}
+
+
+@router.patch("/projects/{pid}")
+def update_project(pid: str, body: ProjectUpdate, db: Session = Depends(get_db)):
+    p = db.get(Project, pid)
+    if not p:
+        raise HTTPException(404, "project not found")
+    if body.name is not None:
+        p.name = body.name
+    changed = False
+    if body.source_type is not None and body.source_type != p.source_type:
+        p.source_type = body.source_type
+        changed = True
+    if body.source_ref is not None and body.source_ref != p.source_ref:
+        p.source_ref = body.source_ref
+        changed = True
+    if changed:
+        try:
+            if p.source_type == "git_url":
+                path = workspace.prepare_git(p.id, p.source_ref)
+            elif p.source_type == "local_path":
+                path = workspace.prepare_local(p.id, p.source_ref)
+            else:
+                raise HTTPException(400, f"unsupported source_type {p.source_type}")
+            p.workspace_path = str(path)
+            p.commit_sha = workspace.head_commit(path)
+            p.languages = detect_stack(path)["languages"]
+            p.status = "ready"
+        except HTTPException:
+            raise
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(400, f"re-prepare workspace failed: {e}")
+    db.commit()
+    db.refresh(p)
+    return project_out(p)
 
 
 # --------------------------- tasks --------------------------- #
@@ -126,6 +173,8 @@ def list_findings(tid: str, confidence: str = Query(None), db: Session = Depends
     q = db.query(Finding).filter(Finding.task_id == tid)
     if confidence:
         q = q.filter(Finding.confidence == confidence)
+    else:
+        q = q.filter(Finding.confidence != "REJECTED")
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     rows = q.all()
     rows.sort(key=lambda f: order.get((f.severity or {}).get("level", "info"), 9))

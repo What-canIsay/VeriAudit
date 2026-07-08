@@ -12,6 +12,12 @@ class ProjectCreate(BaseModel):
     source_ref: str                       # url or local path
 
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    source_type: Optional[str] = None     # git_url | local_path
+    source_ref: Optional[str] = None
+
+
 class TaskCreate(BaseModel):
     depth: str = "standard"               # fast | standard | deep
     languages: Optional[List[str]] = None

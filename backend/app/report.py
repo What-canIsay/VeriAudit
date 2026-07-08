@@ -21,9 +21,14 @@ def _load(task_id: str):
         task = s.get(AuditTask, task_id)
         project = s.get(Project, task.project_id) if task else None
         findings = s.query(Finding).filter(Finding.task_id == task_id).all()
-        data = []
+        data, rejected = [], []
         for f in findings:
             ev = s.query(EvidenceChain).filter(EvidenceChain.finding_id == f.id).first()
+            if f.confidence == "REJECTED":
+                sink = (ev.sink if ev else {}) or {}
+                rejected.append({"vuln_type": f.vuln_type, "location": sink,
+                                 "reason": (ev.static_verdict or {}).get("rationale", "") if ev else ""})
+                continue
             arts = [{"kind": a.kind, "content": a.content, "meta": a.meta} for a in f.artifacts]
             data.append({
                 "id": f.id, "vuln_type": f.vuln_type, "title": f.title,
@@ -41,7 +46,7 @@ def _load(task_id: str):
     corder = {"CONFIRMED_DYNAMIC": 0, "CONFIRMED_STATIC": 1, "SUSPECTED": 2, "REJECTED": 3}
     data.sort(key=lambda d: (order.get(d["severity"].get("level", "info"), 9),
                              corder.get(d["confidence"], 9)))
-    return proj, counts, depth, data
+    return proj, counts, depth, data, rejected
 
 
 def _ev_dict(ev: Optional[EvidenceChain]):
@@ -54,8 +59,8 @@ def _ev_dict(ev: Optional[EvidenceChain]):
 
 
 def render(task_id: str, fmt: str, summary: str = "", rejected: Optional[List[dict]] = None) -> str:
-    proj, counts, depth, findings = _load(task_id)
-    rejected = rejected or []
+    proj, counts, depth, findings, rejected_db = _load(task_id)
+    rejected = rejected or rejected_db
     if fmt == "json":
         return json.dumps({"project": proj, "depth": depth, "summary": summary,
                            "counts": counts, "findings": findings, "rejected": rejected},
