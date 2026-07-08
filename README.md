@@ -2,7 +2,7 @@
 
 > **一句话定位**：VeriAudit 是一套以 **"验证驱动（Verification-first）"** 为核心的多智能体代码安全审计系统。它不满足于"用大模型扫出可疑点"，而是为每一个漏洞给出**可复现的 PoC、完整的证据链（文件位置 → 调用路径 → 污点流 → 验证结果）与置信度分级**，最终产出结构化审计报告。
 
-VeriAudit 面向通用多语言开源项目，通过 **编排官 / 侦察员 / 漏洞猎手 / 污点追踪员 / 验证官 / 报告官** 六类具备工具调用能力的智能体协同工作，完成"发现 → 追踪 → 验证 → 利用 → 报告"的完整闭环。
+VeriAudit 面向通用多语言开源项目，通过 **规模评估 → 编排官 / 侦察员 / 漏洞猎手 / 污点追踪员 / 环境构建官 / 验证官 / 报告官** 七类具备工具调用能力的智能体（外加一个前置的"规模评估"环节）协同工作，完成"评估 → 规划 → 侦察 → 发现 → 追踪 → 搭建 → 验证(实弹复现) → 报告"的完整闭环。
 
 ---
 
@@ -22,14 +22,16 @@ VeriAudit 的名字（**Veri**fication + **Audit**）即定位：**把"验证"�
 
 | 能力 | 说明 |
 |---|---|
-| 多角色智能体协同 | 6 类智能体基于 LangGraph 状态机编排，支持并行、回环与动态子任务派生 |
-| 工具调用 | 20+ 工具：代码检索、AST 查询、调用图/入口点分析、SAST 扫描、污点追踪、RAG 知识库、沙箱执行、PoC 运行等（见 [`docs/03-tools.md`](docs/03-tools.md)） |
-| 自动化 PoC / 漏洞利用 | 验证官在隔离沙箱中自动构建目标环境、生成并运行利用代码，带自我纠错重试，产出可复现的漏洞利用代码 |
+| 多角色智能体协同 | 7 类智能体 + 前置"规模评估"，由单进程 asyncio 状态机（LangGraph 式）编排；漏洞猎手、环境构建官、验证官为 agentic（模型自主编排工具） |
+| 规模自适应预算 | 审计前评估项目规模/复杂度，据此自动推算各阶段步数/超时/名额等所有上限，小项目省、大项目够用（`app/profiler.py`） |
+| 工具调用 | 20+ 工具：代码检索、入口点/攻击面分析、Semgrep/CodeQL/Gitleaks/OSV 扫描、污点追踪、知识库、沙箱执行等（见 [`docs/03-tools.md`](docs/03-tools.md)） |
+| 环境构建官 + 核验预热 | deep 档由模型自主把目标应用在沙箱里搭起来，并按项目自适应地预热（建测试账号、按角色登录、seed 数据），供后续复现复用 |
+| agentic 深度核验 + 实弹复现 | 验证官读全跨文件上下文，并在常驻应用上用 **sqlmap / nuclei / strace / 白盒 SQL 日志 / 带鉴权 HTTP 探针** 实弹触发漏洞，产出精确 PoC 与动态复现证据 |
 | 证据链 | 每个漏洞输出：入口点、source/sink、调用路径、污点流各跳、净化检查、可达性结论、静态与动态验证结果、产物（请求/响应、日志） |
-| 结构化审计报告 | 漏洞列表、严重等级（CVSS 向量 + 分级）、证据链、修复建议；支持 Markdown / PDF / JSON / **SARIF**（可接入 CI）导出 |
-| 多语言 | 通过"语言适配器"扩展，MVP 覆盖 Python / JavaScript·TypeScript / Java / Go / PHP |
-| 云端强模型接入 | 通过 LiteLLM 以 API Key 接入云端强模型（默认推荐强代码推理模型）；**本地模型预留接口，暂不实现** |
-| 优美前端 | 实时智能体执行时间线、证据链可视化图、报告工作台（见 [`docs/07-frontend-design.md`](docs/07-frontend-design.md)） |
+| 结构化审计报告 | 漏洞列表、严重等级（CVSS 向量 + 分级）、证据链、修复建议；支持 Markdown / JSON / **SARIF**（可接入 CI）导出 |
+| 多语言 | 通过"语言适配器"扩展，覆盖 Python / JavaScript·TypeScript / Java / Go / PHP |
+| 云端强模型接入 | 通过 LiteLLM 以 API Key 接入云端强模型；无 Key 时自动进入 Mock 模式全程离线可跑；**本地模型预留接口，暂不实现** |
+| 优美前端 | 实时智能体执行时间线（含模型思考过程）、证据链可视化、报告工作台、历史任务回看（见 [`docs/07-frontend-design.md`](docs/07-frontend-design.md)） |
 
 ---
 
@@ -38,7 +40,7 @@ VeriAudit 的名字（**Veri**fication + **Audit**）即定位：**把"验证"�
 | 文档 | 内容 |
 |---|---|
 | [`docs/01-architecture.md`](docs/01-architecture.md) | 总体架构、分层、数据流、部署形态 |
-| [`docs/02-agents-and-orchestration.md`](docs/02-agents-and-orchestration.md) | 六类智能体职责、LangGraph 编排、协作协议、状态机 |
+| [`docs/02-agents-and-orchestration.md`](docs/02-agents-and-orchestration.md) | 智能体职责、编排、协作协议、状态机 |
 | [`docs/03-tools.md`](docs/03-tools.md) | 工具目录与接口规范（每个智能体调用哪些工具） |
 | [`docs/04-verification-poc-evidence.md`](docs/04-verification-poc-evidence.md) | 双层验证流水线、沙箱、PoC 自动生成、证据链数据模型 |
 | [`docs/05-data-model-and-api.md`](docs/05-data-model-and-api.md) | 数据模型、数据库 Schema、后端 REST + SSE API |
@@ -69,4 +71,18 @@ VeriAudit 在**产品形态与总体范式**上参考了开源项目 [DeepAudit]
 
 ## 状态
 
-当前为 **系统设计阶段**，本仓库仅包含设计文档，尚未落地代码。实施路线见 [`docs/09-tech-stack-and-roadmap.md`](docs/09-tech-stack-and-roadmap.md)。
+**已落地并可运行**：后端（FastAPI + SQLite + LiteLLM，单进程 asyncio 编排 + SSE）、前端（React + Vite + Tailwind）、Docker 沙箱与专业工具链均已实现，支持 Mock 与云端两种模式。**部署与运行见 [`LAUNCH.md`](LAUNCH.md)**（含完整环境变量表、依赖与故障排查）。
+
+### 实现现状 vs 设计文档（对齐说明）
+
+`docs/01–09` 为**原始设计文档**，落地时对部分设计做了工程化取舍，并新增了几个角色/机制。以下是与设计文档的主要差异，以实现为准：
+
+| 项 | 设计文档 | 实际实现 |
+|---|---|---|
+| 编排运行时 | LangGraph | 单进程 **asyncio 状态机**（LangGraph 式，无外部运行时依赖） |
+| 存储 / 知识库 | PostgreSQL + pgvector / ChromaDB RAG | 默认 **SQLite**；知识库为内置规则库（`knowledge.py`），非向量 RAG |
+| 智能体 | 编排官/侦察员/漏洞猎手/污点追踪员/验证官/报告官（6） | **新增 环境构建官(Provisioner)**（deep 档搭建 + 核验预热）；**新增前置"规模评估(Profiler)"** 计算自适应预算 |
+| 验证官 | 单轮静态判定 + 沙箱 PoC | 升级为 **agentic 深度核验**：自主读全上下文 + 用 sqlmap/nuclei/strace/白盒 SQL 日志/带鉴权探针**实弹复现**；含每候选自适应步数、接近成功续步、回落止损 |
+| 报告导出 | Markdown / PDF / JSON / SARIF | Markdown / JSON / SARIF（PDF 暂未实现） |
+
+> 若需要把某一篇设计文档（如 02/03/04）与当前实现逐条对齐重写，可单独提出。
