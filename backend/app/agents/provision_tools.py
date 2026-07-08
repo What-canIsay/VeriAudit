@@ -77,7 +77,9 @@ def dispatch(env: dict, ctx, name: str, args: dict) -> dict:
         hist[cmd] = hist.get(cmd, 0) + 1
         if hist[cmd] > 2:
             return {"note": "同一命令已多次执行且未奏效，请换一种方案（读配置/换命令/放弃）。", "exit_code": -1}
-        return sandbox.exec_in(env, cmd, settings.provisioner_cmd_timeout_sec)
+        cmd_timeout = ctx.state.get("budget", {}).get(
+            "provisioner_cmd_timeout_sec", settings.provisioner_cmd_timeout_sec)
+        return sandbox.exec_in(env, cmd, cmd_timeout)
 
     if name == "start_app":
         cmd, port = args.get("command", ""), int(args.get("port", 0))

@@ -30,6 +30,7 @@ export function conf(c?: string) {
 }
 
 export const AGENT_META: Record<string, { label: string; color: string }> = {
+  profiler: { label: "规模评估", color: "text-teal-400" },
   planner: { label: "编排官", color: "text-violet-400" },
   recon: { label: "侦察员", color: "text-sky-400" },
   hunter: { label: "漏洞猎手", color: "text-amber-400" },

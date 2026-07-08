@@ -33,10 +33,10 @@ def _priority(c):
 
 async def run(ctx: AuditContext) -> dict:
     run_id = await ctx.start_agent("validator", "verify")
-    budget = ctx.state.get("plan", {}).get("budget", {})
+    budget = ctx.state.get("plan", {}).get("budget", {}) or ctx.state.get("budget", {})
     max_verify = budget.get("max_verify", settings.max_verify)
     do_dynamic = budget.get("dynamic_verification", False)
-    llm_left = settings.llm_triage_limit
+    llm_left = budget.get("llm_triage_limit", settings.llm_triage_limit)
 
     cands = sorted(ctx.state.get("candidates", []), key=_priority)
     confirmed = suspected = rejected = dyn = 0
@@ -108,7 +108,10 @@ async def _static_verify(ctx: AuditContext, run_id, c: dict, use_llm: bool) -> d
         user = (f"漏洞类型: {c['vuln_type']}\n位置: {c['location']['file']}:{c['location']['line']}\n"
                 f"来源: {c.get('origin')}\n可达性: {c.get('reachability')}\n污点路径:\n{_taint_text(c)}\n\n"
                 f"代码上下文:\n{window}\n\n" + prompts.VALIDATOR_JUDGE_INSTR)
-        j, reasoning, content = await asyncio.to_thread(llm.judge_ex, "validator", prompts.VALIDATOR, user)
+        b = ctx.state.get("budget", {})
+        j, reasoning, content = await asyncio.to_thread(
+            llm.judge_ex, "validator", prompts.VALIDATOR, user,
+            b.get("llm_timeout_sec"), b.get("llm_num_retries"))
         await ctx.emit_reasoning(run_id, reasoning=reasoning,
                                  output=content if content else None, kind="verify")
         if j and j.get("verdict") in ("confirmed", "suspected", "rejected"):

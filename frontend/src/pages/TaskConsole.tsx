@@ -12,9 +12,9 @@ import { StatCard, SeverityBar } from "../components/StatCard";
 import { SeverityBadge, ConfidenceBadge } from "../components/Badge";
 import ReportModal from "../components/ReportModal";
 
-const PHASES = ["plan", "recon", "hunt", "trace", "provision", "verify", "report"];
+const PHASES = ["assess", "plan", "recon", "hunt", "trace", "provision", "verify", "report"];
 const PHASE_LABEL: Record<string, string> = {
-  plan: "规划", recon: "侦察", hunt: "发现", trace: "追踪",
+  assess: "评估", plan: "规划", recon: "侦察", hunt: "发现", trace: "追踪",
   provision: "搭建", verify: "验证", report: "报告",
 };
 

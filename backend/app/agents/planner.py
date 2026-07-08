@@ -14,16 +14,24 @@ async def run(ctx: AuditContext) -> dict:
     await ctx.think(run_id, "分析目标、确定语言适配器与审计深度、设置预算护栏。")
 
     depth = ctx.depth
-    plan = {
-        "depth": depth,
-        "budget": {
+    # budget was computed by the profiler up front (scaled to project complexity);
+    # the planner adopts it. Fall back to static settings if the profiler didn't run.
+    budget = dict(ctx.state.get("budget") or {})
+    if not budget:
+        budget = {
             "max_candidates": settings.max_candidates,
             "max_verify": settings.max_verify if depth != "fast" else max(6, settings.max_verify // 2),
             "dynamic_verification": depth in ("standard", "deep") and settings.enable_sandbox,
             "llm_augment": depth in ("standard", "deep"),
-        },
-        "strategy": "SAST候选池 + LLM高召回发现 → 可达性闸门 → 独立双层验证 → 证据链固化",
+        }
+    plan = {
+        "depth": depth,
+        "budget": budget,
+        "strategy": "规模自适应预算 → SAST候选池 + LLM高召回发现 → 可达性闸门 → 独立双层验证 → 证据链固化",
     }
+    prof = ctx.state.get("profile_metrics") or {}
+    if prof.get("tier"):
+        plan["scale"] = {"tier": prof["tier"], "complexity": prof.get("complexity")}
     if llm.enabled:
         j = await asyncio.to_thread(
             llm.judge, "planner", prompts.PLANNER,

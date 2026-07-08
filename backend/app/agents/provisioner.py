@@ -64,7 +64,8 @@ def _needs_db_enrich(ctx: AuditContext) -> bool:
 
 
 def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -> None:
-    deadline = time.time() + settings.provisioner_timeout_sec
+    budget = ctx.state.get("budget", {})
+    deadline = time.time() + budget.get("provisioner_timeout_sec", settings.provisioner_timeout_sec)
     if enrich:
         user = (f"应用已在端口 {env.get('port')} 运行。为了能对数据库相关漏洞（如 SQL 注入）进行真实动态复现，"
                 "请确保数据库可用：阅读代码判断所用数据库与表结构，用 run_command 创建/迁移表并插入若干示例数据(seed)；"
@@ -91,10 +92,14 @@ def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -
             return {"error": "provisioning time budget exhausted — 请调用 give_up。"}
         return provision_tools.dispatch(env, ctx, n, a)
 
+    finalize_hint = ("步数/时间预算即将用尽。若应用已可访问：立刻 check_ready 确认后 mark_ready(端口)；"
+                     "若确实起不来：立刻 give_up 并简述原因。不要再尝试新的安装/下载方案。")
     try:
         llm.agentic("provisioner", prompts.PROVISIONER, user,
                     provision_tools.TOOL_SCHEMAS, dispatch, on_tool=on_tool, on_step=on_step,
-                    max_steps=settings.provisioner_max_steps,
-                    stop_tools={"mark_ready", "give_up"})
+                    max_steps=budget.get("provisioner_max_steps", settings.provisioner_max_steps),
+                    stop_tools={"mark_ready", "give_up"},
+                    finalize_hint=finalize_hint, finalize_at=3,
+                    timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"))
     except Exception:
         pass

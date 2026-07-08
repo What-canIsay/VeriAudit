@@ -48,7 +48,8 @@ class LLMGateway:
         return r or None
 
     def _call(self, role: str, messages: List[dict],
-              tools: Optional[List[dict]] = None):
+              tools: Optional[List[dict]] = None,
+              timeout: Optional[int] = None, num_retries: Optional[int] = None):
         if not self.enabled:
             return None
         kwargs: Dict[str, object] = {
@@ -56,8 +57,8 @@ class LLMGateway:
             "messages": messages,
             "api_key": settings.llm_api_key,
             "max_tokens": 4000,
-            "timeout": settings.llm_timeout_sec,
-            "num_retries": settings.llm_num_retries,
+            "timeout": timeout or settings.llm_timeout_sec,
+            "num_retries": settings.llm_num_retries if num_retries is None else num_retries,
         }
         if settings.llm_api_base:
             kwargs["api_base"] = settings.llm_api_base
@@ -71,11 +72,13 @@ class LLMGateway:
             self.last_error = str(e)[:300]
             return None
 
-    def judge_ex(self, role: str, system: str, user: str) -> Tuple[Optional[dict], Optional[str], Optional[str]]:
+    def judge_ex(self, role: str, system: str, user: str,
+                 timeout: Optional[int] = None, num_retries: Optional[int] = None
+                 ) -> Tuple[Optional[dict], Optional[str], Optional[str]]:
         msg = self._call(role, [
             {"role": "system", "content": system + "\n\n只输出一个 JSON 对象，不要解释、不要代码块围栏。"},
             {"role": "user", "content": user},
-        ])
+        ], timeout=timeout, num_retries=num_retries)
         if msg is None:
             return None, None, None
         content = getattr(msg, "content", "") or ""
@@ -89,18 +92,28 @@ class LLMGateway:
                 on_tool: Optional[Callable[[str, dict, dict], None]] = None,
                 on_step: Optional[Callable[[Optional[str], str, List[str]], None]] = None,
                 max_steps: int = 10,
-                stop_tools: Optional[set] = None) -> Tuple[Optional[str], List[dict]]:
+                stop_tools: Optional[set] = None,
+                finalize_hint: Optional[str] = None,
+                finalize_at: int = 2,
+                timeout: Optional[int] = None,
+                num_retries: Optional[int] = None) -> Tuple[Optional[str], List[dict]]:
         """Bounded tool-calling loop where the MODEL drives tool use.
 
         on_step(reasoning, content, tool_names) fires once per model turn so the UI
         can show what the agent is thinking and which tools it chose.
+
+        finalize_hint: when only `finalize_at` steps remain, this message is injected
+        ONCE so the model stops exploring and emits its conclusions (report_candidate /
+        mark_ready / give_up) BEFORE the loop is cut off. This fixes the failure where
+        the model kept exploring until step exhaustion and never produced any output.
         """
         if not self.enabled:
             return None, []
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         trace: List[dict] = []
-        for _ in range(max_steps):
-            msg = self._call(role, messages, tools=tools)
+        hinted = False
+        for i in range(max_steps):
+            msg = self._call(role, messages, tools=tools, timeout=timeout, num_retries=num_retries)
             if msg is None:
                 break
             reasoning = self._reasoning(msg)
@@ -127,6 +140,11 @@ class LLMGateway:
                                  "content": json.dumps(result, ensure_ascii=False)[:6000]})
             if stop_tools and any(tc.function.name in stop_tools for tc in tool_calls):
                 return None, trace   # terminal tool called — stop early (saves tokens)
+            # steps running low: force the model to converge/report on its next turn
+            remaining = max_steps - i - 1
+            if finalize_hint and not hinted and remaining <= finalize_at:
+                messages.append({"role": "user", "content": finalize_hint})
+                hinted = True
         return None, trace
 
 

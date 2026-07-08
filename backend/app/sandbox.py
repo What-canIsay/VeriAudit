@@ -37,14 +37,31 @@ from .knowledge import rule_by_id
 
 _BASE_IMAGE = "python:3.11-slim"
 _CLI_IMAGE = {"python": "python:3.11-slim", "javascript": "node:20-slim"}
-_WEB_IMAGE_TAG = f"{settings.sandbox_image_prefix}-web"
+# "-env": provisioning/web-repro image with a universal toolchain pre-baked. Tag is
+# bumped from the old "-web" (curl-only) so it rebuilds once with the richer layer.
+_WEB_IMAGE_TAG = f"{settings.sandbox_image_prefix}-env"
 _SKIP_TAR = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".idea"}
 
+# Pre-install the tools EVERY provisioning run would otherwise waste steps/tokens
+# discovering it lacks and installing by hand: a C/C++ build toolchain, git, download
+# tools, unzip, pkg-config, ps. These are language-agnostic and don't cause dependency
+# conflicts. Language runtimes / DB servers (php, mysql, node…) are NOT baked in (they
+# would bloat the image and vary per project) — the Provisioner apt-installs those on
+# demand, which now works because the container keeps the caps apt/dpkg need.
 _WEB_DOCKERFILE = (
     "FROM python:3.11-slim\n"
-    "RUN apt-get update && apt-get install -y --no-install-recommends curl "
+    "ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1\n"
+    "RUN apt-get update && apt-get install -y --no-install-recommends "
+    "build-essential git curl wget unzip ca-certificates pkg-config procps "
     "&& rm -rf /var/lib/apt/lists/*\n"
 )
+
+# Caps the persistent PROVISIONING container needs so `apt-get install` (dpkg chowns
+# files) and services that drop root (mysql/apache → setuid/setgid) actually work.
+# Everything else stays dropped; the container is still ephemeral, resource-capped,
+# network-limited, and has no host mount.
+_PROV_CAPS = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID",
+              "KILL", "SETPCAP", "NET_BIND_SERVICE"]
 
 
 def _marker() -> str:
@@ -80,8 +97,9 @@ def _ensure_web_image() -> Optional[str]:
     if not _image_present(_BASE_IMAGE):
         return None  # don't auto-pull
     try:
+        # richer toolchain layer → allow more time for the one-time build
         b = subprocess.run(["docker", "build", "-t", _WEB_IMAGE_TAG, "-"],
-                           input=_WEB_DOCKERFILE.encode(), capture_output=True, timeout=180)
+                           input=_WEB_DOCKERFILE.encode(), capture_output=True, timeout=600)
         return _WEB_IMAGE_TAG if b.returncode == 0 else None
     except Exception:
         return None
@@ -323,9 +341,12 @@ def start_persistent(root: Path, task_id: str, lang: str) -> Optional[dict]:
     name = f"veri-prov-{task_id[:10]}"
     _docker("rm", "-f", name)  # clear any stale
     net = [] if settings.sandbox_allow_network else ["--network", "none"]
+    caps: List[str] = []
+    for c in _PROV_CAPS:
+        caps += ["--cap-add", c]
     r = _docker("run", "-d", "--name", name, *net,
                 "--memory", "2g", "--cpus", "2", "--pids-limit", "512",
-                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--cap-drop", "ALL", *caps,
                 image, "tail", "-f", "/dev/null", timeout=60)
     if r.returncode != 0:
         return None

@@ -151,15 +151,19 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `SANDBOX_ALLOW_NETWORK` | `true` | 复现容器放开网络（仅用于装项目依赖；设 `false` 走严格无出网，则只有依赖已内置的项目可复现） |
 | `ENABLE_PROVISIONER` | `true` | 是否启用环境构建官（仅 `deep` 档生效：一次把目标应用搭起来供复用） |
 | `PROVISIONER_LLM_ENRICH` | `false` | **深度增强开关**：即使应用已起，也让模型建表/迁移/seed 数据库，从而让 **SQL 注入等 DB 依赖漏洞也能动态复现**（每次 deep 多花些 token，仅在存在 DB 相关漏洞时触发） |
-| `PROVISIONER_MAX_STEPS` / `PROVISIONER_TIMEOUT_SEC` | 16 / 900 | 搭建步数与总时长预算（防死循环/控 token） |
+| `ENABLE_ADAPTIVE_BUDGET` | `true` | **规模自适应预算**（见下）。开启时下面各上限被当作**小项目的下限**，审计前由评估模块按项目规模/复杂度自动放大；设 `false` 则退回下面的固定值 |
+| `PROVISIONER_MAX_STEPS` / `PROVISIONER_TIMEOUT_SEC` | 16 / 900 | 搭建步数与总时长预算（自适应下限；防死循环/控 token） |
+| `PROVISIONER_CMD_TIMEOUT_SEC` | `240` | 单条搭建命令超时（自适应下限；需构建的项目会自动放大） |
 | `ENABLE_SEMGREP` / `ENABLE_SECRET_SCAN` / `ENABLE_DEPENDENCY_SCAN` | `true` | 专业工具（Semgrep / Gitleaks / OSV）开关 |
 | `ENABLE_CODEQL` | `false` | CodeQL 语义分析（重，深度档；需安装 codeql） |
-| `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（控 token） |
-| `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（控 token） |
-| `LLM_TIMEOUT_SEC` / `LLM_NUM_RETRIES` | 90 / 1 | LLM 请求超时与重试（防挂起） |
-| `MAX_CANDIDATES` / `MAX_VERIFY` | 60 / 30 | 预算护栏 |
-| `TASK_TIMEOUT_SEC` | `1800` | 单任务总超时 |
+| `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（自适应下限；控 token） |
+| `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（自适应下限；控 token） |
+| `LLM_TIMEOUT_SEC` / `LLM_NUM_RETRIES` | 90 / 1 | LLM 请求超时与重试（自适应下限；防挂起） |
+| `MAX_CANDIDATES` / `MAX_VERIFY` | 60 / 30 | 预算护栏（自适应下限） |
+| `TASK_TIMEOUT_SEC` | `1800` | 单任务总超时（自适应下限；自动放大以覆盖各阶段预算之和） |
 | `CORS_ORIGINS` | `*` | 允许的跨域来源 |
+
+> **规模自适应预算（`app/profiler.py`）**：每次审计开始前，先由「规模评估」阶段（前端时间线第一个环节）扫描项目的**文件数、代码行、入口点、语言数、依赖数，以及是否需要构建工具链 / 数据库 / 多服务**，据此把上表所有上限从「下限（小项目）」线性放大到内置上限。这样 5 文件的样本与 400 文件的多语言应用不会共用同一套步数/超时——小项目快而省，大项目有足够预算跑完工作而不会中途被掐断（这正是「猎手没产出候选 / 搭建官搭到一半被停」的根因）。评估结果与算出的预算会实时显示在前端时间线。
 
 ### 专业审计工具（真实人员常用；自动探测，缺失即降级）
 
@@ -191,9 +195,10 @@ VeriAudit/
 │  │  ├─ main.py             FastAPI 入口（REST + SSE）
 │  │  ├─ config.py db.py models.py schemas.py events.py workspace.py
 │  │  ├─ knowledge.py analysis.py sandbox.py severity.py report.py
-│  │  ├─ orchestrator.py     六阶段编排状态机
-│  │  ├─ llm/gateway.py      LiteLLM 网关（+ Mock 回落）
-│  │  ├─ agents/             planner/recon/hunter/tracer/validator/reporter + tools/prompts/context
+│  │  ├─ profiler.py         规模评估：按项目复杂度计算各阶段预算上限
+│  │  ├─ orchestrator.py     评估 + 七阶段编排状态机
+│  │  ├─ llm/gateway.py      LiteLLM 网关（+ Mock 回落，含步数将尽的收尾提示）
+│  │  ├─ agents/             planner/recon/hunter/tracer/provisioner/validator/reporter + tools/prompts/context
 │  │  └─ api/routes.py       REST + SSE 路由
 │  └─ scripts/smoke.py       离线端到端冒烟测试
 └─ frontend/
@@ -225,7 +230,8 @@ cd backend
 | 前端能打开但接口 500/无数据 | 确认后端已在 `:8000` 运行（`/healthz`）；查看后端终端日志 |
 | 侧栏显示「沙箱不可用」 | 未装/未启动 Docker，或 `ENABLE_SANDBOX=false`；不影响静态审计 |
 | 动态验证总是「未复现」 | 目标非自包含 CLI 入口时会安全跳过（静态结论有效）；这是预期行为 |
-| 首次动态验证很慢 | 首次会拉取沙箱基础镜像（python:3.11-slim / node:20-slim），之后缓存 |
+| 首次动态验证/搭建很慢 | 首次会基于本地 `python:3.11-slim` 构建一个预装通用工具链（gcc/make/git/curl/wget/unzip）的搭建镜像 `veriaudit-sandbox-env`（约 1~2 分钟，一次性），之后缓存复用；不自动拉取新基础镜像以省 C 盘 |
+| 搭建官装不上 php/mysql 等运行时 | 搭建容器已放开 apt/dpkg 所需的最小权限集（保持 cap-drop ALL + 仅按需 cap-add）；模型可直接 `apt-get install` 语言运行时/数据库。若仍失败，检查 `SANDBOX_ALLOW_NETWORK=true`（装包需出网） |
 | Git 克隆失败 | 仅允许 http/https 公网仓库；内网/`file://` 被 SSRF 防护拒绝 |
 | Python 版本较低报语法错误 | 需 Python ≥ 3.9 |
 

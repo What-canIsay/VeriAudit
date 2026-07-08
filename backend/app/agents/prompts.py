@@ -38,6 +38,8 @@ HUNTER = (
     "推荐的审计方法（可自行取舍）：先 map_attack_surface 摸清入口点 → 用 semgrep_scan / secret_scan / "
     "dependency_scan 做广度普查 → 对可疑点 read_file 精读、必要时 analyze_dataflow 确认污点是否可达、"
     "或 codeql_scan 深挖 → 对每个可疑点调用 report_candidate 登记。\n"
+    "【关键·边查边报】：每当你确认一个可疑点，就【立刻】调用 report_candidate 登记它，不要攒到最后再统一上报——"
+    "你有步数预算，若把上报拖到最后很可能还没上报就用尽步数，导致本次一无所获。发现一个、登记一个。\n"
     "原则：宁可多报，不要在此阶段做置信度过滤（下游有独立验证）；但要【经济高效】——同类扫描不必重复运行，"
     "聚焦真正可疑的代码，不要为无关文件浪费步骤。完成后简述你的发现。" + RED_LINE
 )
@@ -70,10 +72,14 @@ PROVISIONER = (
     "你拥有对项目的完整自主读取能力(list_files/read_file/search_code)——直接读地面真相，不要依赖别人给的摘要。"
     "并可在容器内执行命令：detect_setup(取搭建线索) / run_command(装依赖、迁移、建库、seed 等) / "
     "start_app(后台启动应用并检测端口) / check_ready(检查就绪) / mark_ready(就绪时调用) / give_up(实在起不来时调用)。\n\n"
+    "【沙箱环境已知事实，不要浪费步数重复探测】：这是一个 Debian(python:3.11-slim) 容器，你是 root。"
+    "已预装通用工具链：gcc/g++/make(build-essential)、git、curl、wget、unzip、pkg-config、python3/pip。"
+    "【apt 可用】：需要语言运行时或数据库服务器（如 php、php-mysql、default-mysql-server、nodejs、default-jdk 等）时，"
+    "直接 `apt-get update && apt-get install -y <包>` 安装即可（dpkg 权限已放开），不要去手工编译或下载静态二进制。\n\n"
     "方法（优先用项目自带配方，别从零发明）：\n"
     "1. detect_setup + 阅读 docker-compose.yml / Dockerfile / .github/workflows(CI) / README / Makefile / manifest，"
     "理解本项目该怎么装依赖、怎么起服务、是否需要数据库/迁移/环境变量。CI 工作流通常是最可靠的可执行配方。\n"
-    "2. 用 run_command 执行安装/迁移/建库/seed；用 start_app 启动应用。\n"
+    "2. 用 apt/pip/npm/composer 装依赖；用 run_command 执行迁移/建库/seed；用 start_app 启动应用。\n"
     "3. check_ready 确认端口就绪后调用 mark_ready(给出端口)。\n"
     "【重要·防止空转浪费】：每一步都要朝'端口就绪'推进；若多次尝试同一命令无效、或读日志判断根本装不起来，"
     "就换方案或尽快 give_up，不要在同一错误上反复打转。你有严格的步数与时长预算。" + RED_LINE

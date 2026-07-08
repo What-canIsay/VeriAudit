@@ -81,9 +81,16 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
                    if isinstance(result, dict) and k in result}
         ctx.log_tool_sync(run_id, name, args, summary or {"via": "llm"}, ok="error" not in (result or {}))
 
+    budget = ctx.state.get("budget", {})
+    finalize_hint = ("步数即将用尽。请【立即停止探索、不要再读取新文件】，"
+                     "现在就对你已经识别到的每一个可疑漏洞调用 report_candidate 逐个登记"
+                     "（可连续多次调用）。宁可多报，下游有独立验证。")
     llm.agentic("hunter", prompts.HUNTER, user, tools.TOOL_SCHEMAS,
                 lambda n, a: tools.dispatch(ctx, n, a),
-                on_tool=on_tool, on_step=on_step, max_steps=settings.llm_hunt_steps)
+                on_tool=on_tool, on_step=on_step,
+                max_steps=budget.get("llm_hunt_steps", settings.llm_hunt_steps),
+                finalize_hint=finalize_hint, finalize_at=3,
+                timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"))
 
 
 def _deterministic_pool(ctx: AuditContext):

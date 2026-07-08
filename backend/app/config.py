@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     llm_num_retries: int = 1                 # bounded retries
 
     # --- budget guardrails (economy: bound token spend of an LLM-driven run) ---
+    # When on, a profiler (app/profiler.py) sizes the target project up front and
+    # scales EVERY limit below to its scale/complexity. The values below then act as
+    # per-limit FLOORS (small projects) with ceilings defined in the profiler.
+    enable_adaptive_budget: bool = True
     llm_hunt_steps: int = 16              # max tool-calling steps for the LLM-driven hunt
     llm_triage_limit: int = 16            # max candidates the LLM validator judges (rest heuristic)
     max_agent_steps: int = 12             # generic per-agent loop cap

@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import sandbox
+from . import profiler, sandbox
 from .agents import hunter, planner, provisioner, recon, reporter, tracer, validator
 from .agents.context import AuditContext
 from .config import settings
@@ -19,7 +19,7 @@ from .events import emit
 from .knowledge import rule_by_id
 from .models import AuditTask, Project
 
-_PHASES = ["plan", "recon", "hunt", "trace", "verify", "report"]
+_PHASES = ["assess", "plan", "recon", "hunt", "trace", "verify", "report"]
 
 
 async def _set(task_id: str, **fields) -> dict:
@@ -55,13 +55,16 @@ async def run_audit(task_id: str) -> None:
         await emit(task_id, "task.finished", {"error": "workspace not prepared"})
         return
 
-    await _set(task_id, status="running", phase="plan", started_at=datetime.now(timezone.utc))
-    await _emit_status(task_id, "plan", "running")
+    await _set(task_id, status="running", phase="assess", started_at=datetime.now(timezone.utc))
+    await _emit_status(task_id, "assess", "running")
 
     ctx = AuditContext(task_id, root, depth)
     try:
+        # Size the project up front → derive every budget/limit from its complexity.
+        await _run_profiler(ctx, task_id)
+        task_timeout = ctx.state.get("budget", {}).get("task_timeout_sec", settings.task_timeout_sec)
         try:
-            await asyncio.wait_for(_pipeline(ctx, task_id), timeout=settings.task_timeout_sec)
+            await asyncio.wait_for(_pipeline(ctx, task_id), timeout=task_timeout)
             await _set(task_id, status="succeeded", phase="report",
                        finished_at=datetime.now(timezone.utc))
             await _emit_status(task_id, "report", "succeeded")
@@ -92,6 +95,18 @@ def _should_provision(ctx: AuditContext) -> bool:
         return False
     return any((rule_by_id(c.get("rule_id", "")) or {}).get("reproducible")
                for c in ctx.state.get("candidates", []))
+
+
+async def _run_profiler(ctx: AuditContext, task_id: str) -> None:
+    run_id = await ctx.start_agent("profiler", "assess")
+    await ctx.think(run_id, "评估项目规模与复杂度（文件数/代码行/入口点/语言/依赖/是否需构建·数据库·多服务），据此计算各阶段预算上限。")
+    profile, budget = await asyncio.to_thread(profiler.assess, ctx.root, ctx.depth)
+    ctx.state["profile_metrics"] = profile
+    ctx.state["budget"] = budget
+    await ctx.log_tool(run_id, "assess_project", {}, {"tier": profile.get("tier"), "budget": budget})
+    await ctx.emit("assess.ready", {"profile": profile, "budget": budget})
+    await ctx.finish_agent(run_id, {"tier": profile.get("tier"),
+                                    "complexity": profile.get("complexity"), "budget": budget})
 
 
 async def _pipeline(ctx: AuditContext, task_id: str) -> None:

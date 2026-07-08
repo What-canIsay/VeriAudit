@@ -1,13 +1,13 @@
 import { useEffect, useRef } from "react";
 import {
   Brain, Wrench, Radar, Bug, GitBranch, ShieldCheck, FileText,
-  Cpu, CheckCircle2, XCircle, FlaskConical, Circle, Container,
+  Cpu, CheckCircle2, XCircle, FlaskConical, Circle, Container, Gauge,
 } from "lucide-react";
 import type { LiveEvent } from "../lib/useTaskEvents";
 import { agentMeta } from "../lib/format";
 
 const AGENT_ICON: Record<string, any> = {
-  planner: Cpu, recon: Radar, hunter: Bug, tracer: GitBranch,
+  profiler: Gauge, planner: Cpu, recon: Radar, hunter: Bug, tracer: GitBranch,
   provisioner: Container, validator: ShieldCheck, reporter: FileText,
 };
 
@@ -90,6 +90,35 @@ function renderRow(e: LiveEvent) {
           )}
         </Row>
       );
+    case "assess.ready": {
+      const p = d.profile || {};
+      const b = d.budget || {};
+      return (
+        <div key={e.seq} className="pl-6 animate-fade-in">
+          <div className="rounded-lg border border-teal-500/30 bg-teal-500/5 overflow-hidden">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-teal-500/20">
+              <Gauge className="w-3.5 h-3.5 text-teal-400" />
+              <span className="text-xs font-medium text-teal-300">规模评估 · 档位 {p.tier}</span>
+            </div>
+            <div className="px-3 py-2 text-[11px] text-muted leading-relaxed">
+              <div className="mb-1">{p.rationale}</div>
+              <div className="flex flex-wrap gap-1.5 font-mono">
+                {[
+                  ["挖掘步数", b.llm_hunt_steps],
+                  ["候选上限", b.max_candidates],
+                  ["验证上限", b.max_verify],
+                  ["搭建步数", b.provisioner_max_steps],
+                  ["搭建时长", b.provisioner_timeout_sec && `${b.provisioner_timeout_sec}s`],
+                  ["任务时长", b.task_timeout_sec && `${b.task_timeout_sec}s`],
+                ].filter(([, v]) => v != null && v !== false).map(([k, v]) => (
+                  <span key={String(k)} className="chip text-teal-300/80 border-teal-500/30">{k} {v}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     case "candidate.recorded":
       return (
         <Row key={e.seq} tone="tool">
