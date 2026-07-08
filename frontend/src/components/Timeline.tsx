@@ -149,6 +149,16 @@ function renderRow(e: LiveEvent) {
           <span className="text-xs text-faint">端口 {d.port} · {d.by === "llm" ? "模型搭建" : "确定性搭建"}</span>
         </Row>
       );
+    case "preheat.ready":
+      return (
+        <Row key={e.seq} tone="ok">
+          <Container className="w-4 h-4 text-orange-400 shrink-0" />
+          <span className="text-orange-300 text-xs">核验预热就绪</span>
+          {Array.isArray(d.sessions) && d.sessions.length > 0 && (
+            <span className="text-[11px] text-faint font-mono">会话: {d.sessions.join(", ")}</span>
+          )}
+        </Row>
+      );
     case "provision.failed":
       return (
         <Row key={e.seq} tone="muted">

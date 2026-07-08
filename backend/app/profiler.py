@@ -34,6 +34,7 @@ _CEIL = {
     "llm_triage_limit": 40,
     "agentic_verify_limit": 12,
     "validator_steps": 22,
+    "preheat_max_steps": 28,
     "provisioner_max_steps": 48,
     "provisioner_timeout_sec": 1800,
     "provisioner_cmd_timeout_sec": 600,
@@ -172,6 +173,7 @@ def assess(root: Path, depth: str) -> Tuple[Dict, Dict]:
         # multi-step seed→login→inject→observe reproduction workflow.
         "validator_steps": _scale(max(t, pt), fl.validator_steps, _CEIL["validator_steps"]),
         # provisioning
+        "preheat_max_steps": _scale(pt, fl.preheat_max_steps, _CEIL["preheat_max_steps"]),
         "provisioner_max_steps": _scale(pt, fl.provisioner_max_steps, _CEIL["provisioner_max_steps"]),
         "provisioner_timeout_sec": _scale(pt, fl.provisioner_timeout_sec, _CEIL["provisioner_timeout_sec"]),
         "provisioner_cmd_timeout_sec": _scale(
@@ -192,9 +194,13 @@ def assess(root: Path, depth: str) -> Tuple[Dict, Dict]:
                 else min(budget["agentic_verify_limit"], budget["max_verify"]))
     else:
         n_ag = 0
-    verify_alloc = n_ag * budget["validator_steps"] * 6 + max(0, budget["max_verify"] - n_ag) * 15
+    # per-candidate agentic steps vary (B + additive) and may extend once; estimate the
+    # mean planned steps + an extension slack factor.
+    est_steps = budget["validator_steps"] + settings.validator_step_add_max * 0.5
+    verify_alloc = int(n_ag * est_steps * 6 * 1.2 + max(0, budget["max_verify"] - n_ag) * 15)
+    preheat_alloc = budget["preheat_max_steps"] * 8 if (agentic_on and settings.enable_provisioner_preheat) else 0
     provision_alloc = budget["provisioner_timeout_sec"] if depth == "deep" else 0
-    task_timeout = 600 + hunt_alloc + verify_alloc + provision_alloc + 300
+    task_timeout = 600 + hunt_alloc + verify_alloc + preheat_alloc + provision_alloc + 300
     budget["task_timeout_sec"] = int(max(fl.task_timeout_sec,
                                          min(_CEIL["task_timeout_sec"], task_timeout)))
 
@@ -226,6 +232,7 @@ def _static_budget(depth: str) -> Dict:
         "llm_augment": depth in ("standard", "deep"),
         "agentic_verify_limit": settings.agentic_verify_limit,
         "validator_steps": settings.validator_steps,
+        "preheat_max_steps": settings.preheat_max_steps,
         "provisioner_max_steps": settings.provisioner_max_steps,
         "provisioner_timeout_sec": settings.provisioner_timeout_sec,
         "provisioner_cmd_timeout_sec": settings.provisioner_cmd_timeout_sec,

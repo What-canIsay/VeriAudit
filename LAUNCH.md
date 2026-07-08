@@ -150,7 +150,9 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `SANDBOX_BUILD_TIMEOUT_SEC` | `420` | 复现容器总超时（含装依赖+启动） |
 | `SANDBOX_ALLOW_NETWORK` | `true` | 复现容器放开网络（仅用于装项目依赖；设 `false` 走严格无出网，则只有依赖已内置的项目可复现） |
 | `ENABLE_PROVISIONER` | `true` | 是否启用环境构建官（仅 `deep` 档生效：一次把目标应用搭起来供复用） |
-| `PROVISIONER_LLM_ENRICH` | `false` | **深度增强开关**：即使应用已起，也让模型建表/迁移/seed 数据库，从而让 **SQL 注入等 DB 依赖漏洞也能动态复现**（每次 deep 多花些 token，仅在存在 DB 相关漏洞时触发） |
+| `ENABLE_PROVISIONER_PREHEAT` | `true` | **核验预热**：应用起来后，由模型按项目自适应地准备可复用的验证基底（测试账号、按角色登录的会话、seed 数据、备忘），让逐候选核验热启动、少走冤枉步数。**已取代** `PROVISIONER_LLM_ENRICH` |
+| `PREHEAT_MAX_STEPS` | `14` | 预热阶段工具步数上限（自适应下限） |
+| `PROVISIONER_LLM_ENRICH` | `false` | （已被预热取代，保留仅作兼容/关闭用） |
 | `ENABLE_ADAPTIVE_BUDGET` | `true` | **规模自适应预算**（见下）。开启时下面各上限被当作**小项目的下限**，审计前由评估模块按项目规模/复杂度自动放大；设 `false` 则退回下面的固定值 |
 | `PROVISIONER_MAX_STEPS` / `PROVISIONER_TIMEOUT_SEC` | 16 / 900 | 搭建步数与总时长预算（自适应下限；防死循环/控 token） |
 | `PROVISIONER_CMD_TIMEOUT_SEC` | `240` | 单条搭建命令超时（自适应下限；需构建的项目会自动放大） |
@@ -162,6 +164,9 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `VALIDATOR_AGENTIC_FIRST` | `true` | 核验策略：`true`=**agentic 优先**（对每个符合条件的候选先做 agentic 深度核验，失败才回落旧的单轮判定）；`false`=**旧逻辑优先**（默认走单轮判定，仅高危/严重+可复现的候选才升级 agentic） |
 | `ENABLE_AGENTIC_VERIFY_LIMIT` | `false` | 是否启用深度核验的名额配额。默认 `false`=**不限名额**（每个符合条件的候选都做 agentic 深度核验，更彻底但更耗 token）；设 `true` 才用 `AGENTIC_VERIFY_LIMIT` 封顶 |
 | `AGENTIC_VERIFY_LIMIT` | `3` | 每任务进入深度核验的候选数上限（自适应下限；**仅当 `ENABLE_AGENTIC_VERIFY_LIMIT=true` 时生效**，按严重度优先分配） |
+| `VALIDATOR_STEPS` | `12` | 每候选深度核验的**基准步数 B**（自适应下限）。实际每候选步数 = B + 附加(位次/漏洞类别/是否鉴权/污点深度) |
+| `VALIDATOR_STEP_ADD_MAX` / `VALIDATOR_STEP_HARD_CAP` | 12 / 40 | 附加值封顶 / 单候选步数绝对硬顶（控最坏成本） |
+| `VALIDATOR_STEP_EXTENSION` | `1.5` | 会话接近复现成功却将耗尽步数时，一次性把上限提到 `1.5×` 计划步数（受硬顶约束） |
 | `VALIDATOR_STEPS` | `12` | 单个候选深度核验的工具步数上限（自适应下限；鉴权类复现需要更多步） |
 | `LLM_TIMEOUT_SEC` / `LLM_NUM_RETRIES` | 90 / 1 | LLM 请求超时与重试（自适应下限；防挂起） |
 | `MAX_CANDIDATES` / `MAX_VERIFY` | 60 / 30 | 预算护栏（自适应下限） |

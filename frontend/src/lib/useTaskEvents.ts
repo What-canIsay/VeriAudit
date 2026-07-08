@@ -6,7 +6,7 @@ const EVENT_NAMES = [
   "task.status", "agent.started", "agent.finished", "agent.thinking",
   "agent.reasoning", "agent.llm_output", "assess.ready",
   "tool.invoked", "tool.result", "plan.ready", "recon.ready",
-  "candidate.recorded", "trace.ready", "provision.ready", "provision.failed",
+  "candidate.recorded", "trace.ready", "provision.ready", "provision.failed", "preheat.ready",
   "sandbox.poc_attempt",
   "finding.confirmed", "finding.rejected", "verify.ready", "report.ready",
   "task.finished",

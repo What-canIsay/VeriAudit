@@ -48,12 +48,13 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
     {"type": "function", "function": {
-        "name": "http_probe", "description": "向常驻应用发起一次 HTTP 请求（用于精确复现）。自动携带并保存 Cookie，可先登录再打受鉴权的接口。返回状态码、响应头、响应体、耗时。",
+        "name": "http_probe", "description": "向常驻应用发起一次 HTTP 请求（用于精确复现）。按 session 选择对应角色的 Cookie 罐（自动携带并保存），可先登录再打受鉴权的接口。返回状态码、响应头、响应体、耗时。",
         "parameters": {"type": "object", "properties": {
             "method": {"type": "string", "description": "GET/POST/PUT/DELETE 等，默认 GET"},
             "path": {"type": "string", "description": "相对应用的路径，如 /backend/api/admin/delete_row.php?pk_name=..."},
             "headers": {"type": "object", "description": "额外请求头键值对（如 Content-Type、Authorization）"},
-            "body": {"type": "string", "description": "请求体（POST 表单或 JSON 原文）"}},
+            "body": {"type": "string", "description": "请求体（POST 表单或 JSON 原文）"},
+            "session": {"type": "string", "description": "会话/角色名（如 admin、user）；复用预热阶段建立的登录态。留空=匿名会话。"}},
             "required": ["path"]}}},
     {"type": "function", "function": {
         "name": "run_command", "description": "在沙箱容器内执行 shell 命令。可用于专业工具与运行时调试：sqlmap（SQL注入确认/取数）、nuclei（配置/暴露类模板验证）、curl、strace（观察 open/execve 系统调用）、mysql 客户端（查/建/seed 数据）、tail 应用/错误日志等。返回 stdout/stderr/exit_code。",
@@ -76,6 +77,17 @@ TOOL_SCHEMAS: List[dict] = [
             "required": ["verdict"]}}},
 ]
 
+# Preheat toolset (Provisioner): same dynamic tools MINUS conclude, PLUS preheat_ready.
+_PREHEAT_READY = {"type": "function", "function": {
+    "name": "preheat_ready", "description": "【预热完成时调用】登记本项目为漏洞核验准备好的可复用基底：备忘（测试账号/登录配方/关键表结构）与角色→会话映射。若本项目无需鉴权/准备，也调用它并说明。",
+    "parameters": {"type": "object", "properties": {
+        "memo": {"type": "string", "description": "可复用备忘：已创建的测试账号与密码、登录接口/方式、关键表结构、注意事项。"},
+        "sessions": {"type": "object", "description": "角色→会话名映射，如 {\"admin\":\"admin\",\"user\":\"user\"}；这些会话的登录态已保存在对应 Cookie 罐中。"}},
+        "required": ["memo"]}}}
+
+PREHEAT_SCHEMAS: List[dict] = [t for t in TOOL_SCHEMAS
+                              if t["function"]["name"] != "conclude"] + [_PREHEAT_READY]
+
 
 def _b64(s: str) -> str:
     return base64.b64encode((s or "").encode("utf-8", "replace")).decode("ascii")
@@ -93,7 +105,13 @@ def _curl_config(method: str, url: str, headers: dict, body: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _http_probe(env: dict, method: str, path: str, headers: dict, body: str) -> dict:
+def _jar(session: str) -> str:
+    s = "".join(ch for ch in (session or "") if ch.isalnum() or ch in "_-")[:24]
+    return f"/tmp/vjar_{s}" if s else "/tmp/vjar"
+
+
+def _http_probe(env: dict, method: str, path: str, headers: dict, body: str,
+                session: str = "") -> dict:
     port = env.get("port")
     if not port:
         return {"error": "应用端口未知（环境未就绪？）"}
@@ -101,9 +119,10 @@ def _http_probe(env: dict, method: str, path: str, headers: dict, body: str) -> 
     url = f"http://127.0.0.1:{port}{base}{path}"
     cfg = _curl_config(method, url, headers, body)
     marker = "__CODE__"
-    # write config via base64 (no shell-escaping of payloads), keep a shared cookie jar
+    jar = _jar(session)
+    # write config via base64 (no shell-escaping of payloads); cookie jar per role/session
     cmd = (f"echo {_b64(cfg)} | base64 -d > /tmp/vcfg && "
-           f"curl -s -i -m 20 -c /tmp/vjar -b /tmp/vjar -K /tmp/vcfg "
+           f"curl -s -i -m 20 -c {jar} -b {jar} -K /tmp/vcfg "
            f"-w '\\n{marker}%{{http_code}} TIME:%{{time_total}}'")
     r = sandbox.exec_in(env, cmd, 40)
     out = r.get("stdout", "") or ""
@@ -133,13 +152,13 @@ def _sql_log(env: dict, action: str, auth: str) -> dict:
     return {"error": "action 必须是 start|read|stop"}
 
 
-def dispatch(env: dict, ctx, name: str, args: dict, sink: dict) -> dict:
+def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
     if name in ("list_files", "read_file", "search_code", "analyze_dataflow", "search_vuln_kb"):
         return read_tools.dispatch(ctx, name, args)
 
     if name == "http_probe":
         return _http_probe(env, args.get("method", "GET"), args.get("path", ""),
-                           args.get("headers") or {}, args.get("body", ""))
+                           args.get("headers") or {}, args.get("body", ""), args.get("session", ""))
 
     if name == "run_command":
         cmd = args.get("cmd", "")
@@ -154,7 +173,7 @@ def dispatch(env: dict, ctx, name: str, args: dict, sink: dict) -> dict:
     if name == "sql_log":
         return _sql_log(env, args.get("action", ""), args.get("mysql_auth", ""))
 
-    if name == "conclude":
+    if name in ("conclude", "preheat_ready"):
         return {"ok": True}   # captured by the caller's on_tool
 
     return {"error": f"unknown tool {name}"}

@@ -13,6 +13,7 @@ provider returns it, e.g. DeepSeek) so it can be streamed to the UI.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -96,7 +97,10 @@ class LLMGateway:
                 finalize_hint: Optional[str] = None,
                 finalize_at: int = 2,
                 timeout: Optional[int] = None,
-                num_retries: Optional[int] = None) -> Tuple[Optional[str], List[dict]]:
+                num_retries: Optional[int] = None,
+                extend_when: Optional[Callable[[], bool]] = None,
+                extend_factor: float = 1.0,
+                extend_hard_cap: int = 0) -> Tuple[Optional[str], List[dict]]:
         """Bounded tool-calling loop where the MODEL drives tool use.
 
         on_step(reasoning, content, tool_names) fires once per model turn so the UI
@@ -106,13 +110,21 @@ class LLMGateway:
         ONCE so the model stops exploring and emits its conclusions (report_candidate /
         mark_ready / give_up) BEFORE the loop is cut off. This fixes the failure where
         the model kept exploring until step exhaustion and never produced any output.
+
+        extend_when/extend_factor/extend_hard_cap: if the step budget is about to run out
+        and extend_when() reports the session is "promising" (e.g. mid-reproduction), the
+        cap is raised ONCE to ceil(max_steps*extend_factor) (bounded by extend_hard_cap),
+        so a nearly-done session isn't cut off. Fires at most once.
         """
         if not self.enabled:
             return None, []
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         trace: List[dict] = []
         hinted = False
-        for i in range(max_steps):
+        extended = False
+        cap = max_steps
+        i = 0
+        while i < cap:
             msg = self._call(role, messages, tools=tools, timeout=timeout, num_retries=num_retries)
             if msg is None:
                 break
@@ -140,11 +152,22 @@ class LLMGateway:
                                  "content": json.dumps(result, ensure_ascii=False)[:6000]})
             if stop_tools and any(tc.function.name in stop_tools for tc in tool_calls):
                 return None, trace   # terminal tool called — stop early (saves tokens)
+            remaining = cap - i - 1
+            # about to run out but the session looks close to done → extend once
+            if (remaining <= 0 and not extended and extend_factor > 1.0
+                    and extend_when and extend_when()):
+                new_cap = int(math.ceil(max_steps * extend_factor))
+                if extend_hard_cap:
+                    new_cap = min(new_cap, extend_hard_cap)
+                if new_cap > cap:
+                    cap = new_cap
+                    extended = True
+                    hinted = False   # re-arm the finalize nudge for the extended window
             # steps running low: force the model to converge/report on its next turn
-            remaining = max_steps - i - 1
             if finalize_hint and not hinted and remaining <= finalize_at:
                 messages.append({"role": "user", "content": finalize_hint})
                 hinted = True
+            i += 1
         return None, trace
 
 

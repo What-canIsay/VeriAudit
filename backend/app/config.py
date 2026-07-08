@@ -68,7 +68,18 @@ class Settings(BaseSettings):
     # Turn ON to cap agentic verifications at agentic_verify_limit (token guardrail).
     enable_agentic_verify_limit: bool = False
     agentic_verify_limit: int = 3         # max candidates that get the heavy agentic verify (floor; only when the quota is enabled)
-    validator_steps: int = 12             # per-candidate agentic-verify tool-step cap (floor)
+    # per-candidate agentic step budget = base(B) + additive(rank/class/auth/taint).
+    # validator_steps is the BASE floor B (project-scale derived in the profiler).
+    validator_steps: int = 12             # base step floor B
+    validator_step_add_max: int = 12      # cap on the additive part → planned ∈ [B, B+add_max]
+    validator_step_extension: float = 1.5  # one-time extension multiplier for a "promising" session
+    validator_step_hard_cap: int = 40     # absolute per-candidate step ceiling (safety)
+    # Provisioner PREHEAT: after the app is up, an LLM-driven, project-specific session
+    # prepares a reusable verification substrate (test accounts, logged-in sessions per
+    # role, seeded data, a memo) so per-candidate verification starts warm. Subsumes the
+    # old provisioner_llm_enrich DB-seeding.
+    enable_provisioner_preheat: bool = True
+    preheat_max_steps: int = 14           # preheat tool-step floor (scaled in profiler)
     max_agent_steps: int = 12             # generic per-agent loop cap
     max_candidates: int = 60              # cap candidates per task
     max_verify: int = 30                  # cap validations per task

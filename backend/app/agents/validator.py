@@ -26,6 +26,34 @@ from .context import AuditContext
 _TRUSTED_ORIGINS = {"semgrep", "codeql", "gitleaks", "osv"}
 _DETERMINISTIC_RULES = {"hardcoded-secret", "vulnerable-dependency"}
 
+# per-candidate agentic step budget = base B + additive(rank, class, auth, taint).
+# extra steps by reproduction difficulty class of the vuln:
+_CLASS_STEPS = {
+    "path-traversal": 0, "xss": 0, "open-redirect": 0, "ssti": 0, "command-injection": 0,
+    "sql-injection": 4, "code-injection": 4, "xxe": 4,
+    "ssrf": 8, "deserialization": 8,
+}
+_CLASS_DEFAULT = 4
+_AUTH_PATH_MARKERS = ("admin", "/api/", "auth", "account", "manage", "dashboard", "user")
+
+
+def _candidate_steps(ctx: AuditContext, c: dict, rank: int) -> int:
+    """S_i = B + min(add_i, ADD_MAX). add = rank(small,decaying) + class + auth + taint."""
+    b = ctx.state.get("budget", {})
+    B = b.get("validator_steps", settings.validator_steps)
+    rank_bonus = max(0, 3 - rank)                       # +3/+2/+1 for the first three, then 0
+    cls = _CLASS_STEPS.get(c.get("rule_id"), _CLASS_DEFAULT)
+    prof = (ctx.state.get("profile_metrics") or {}).get("metrics", {})
+    path = (c.get("location", {}).get("file") or "").lower()
+    auth = 4 if (prof.get("has_db") and any(m in path for m in _AUTH_PATH_MARKERS)) else 0
+    taint = c.get("taint", {}) or {}
+    hops = len(taint.get("taint_path", []) or [])
+    src = c.get("_source") or {}
+    cross_file = bool(src) and src.get("file") != (c.get("location", {}) or {}).get("file")
+    taint_bonus = min(3, (2 if cross_file else 0) + (1 if hops >= 4 else 0))
+    add = min(rank_bonus + cls + auth + taint_bonus, settings.validator_step_add_max)
+    return int(min(B + add, settings.validator_step_hard_cap))
+
 
 def _priority(c):
     return (-SEVERITY_ORDER.get(c.get("_severity", "medium"), 0), -c.get("self_confidence", 0))
@@ -47,7 +75,7 @@ async def run(ctx: AuditContext) -> dict:
     confirmed = suspected = rejected = dyn = 0
     seen_keys = set()
 
-    for c in cands[:max_verify]:
+    for rank, c in enumerate(cands[:max_verify]):
         if c.get("reachable") is False:
             rejected += 1
             await _persist_rejected(ctx, c, "不可达（无法从对外入口点触达 sink）", seen_keys)
@@ -75,10 +103,11 @@ async def run(ctx: AuditContext) -> dict:
         verdict = dynamic = None
         if want_agentic:
             agentic_left -= 1
-            await ctx.think(run_id, f"对 {c['vuln_type']} 进行深度核验：读全上下文 + 在常驻应用上实弹复现。")
-            verdict, dynamic, ok = await _agentic_verify(ctx, run_id, c, env)
-            if not ok:   # agentic produced no conclusion → fall back to legacy logic
-                await ctx.think(run_id, f"深度核验未得出结论，回落旧逻辑复核 {c['vuln_type']}。")
+            steps = _candidate_steps(ctx, c, rank)
+            await ctx.think(run_id, f"对 {c['vuln_type']} 进行深度核验（预算 {steps} 步）：读全上下文 + 在常驻应用上实弹复现。")
+            verdict, dynamic, ok = await _agentic_verify(ctx, run_id, c, env, steps)
+            if not ok:   # agentic stuck early with no progress → fall back to legacy logic
+                await ctx.think(run_id, f"深度核验未取得进展，回落旧逻辑复核 {c['vuln_type']}。")
                 verdict = dynamic = None
         if verdict is None:
             use_llm = llm.enabled and not deterministic and llm_left > 0
@@ -133,30 +162,50 @@ async def _legacy_verify(ctx: AuditContext, run_id, c: dict, rule, use_llm: bool
     return verdict, dynamic
 
 
-async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict):
+async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: int):
     """Deep verification: the model reads full context and drives dynamic tools against
     the standing app to build a precise PoC and truly reproduce.
-    Returns (verdict, dynamic, ok) — ok=False when the model produced no conclusion
-    (ran out of steps / errored) so the caller can fall back to legacy logic."""
+
+    Returns (verdict, dynamic, ok). ok=False ONLY when the session made no real progress
+    (stuck early) → caller falls back to legacy. A "promising" session that runs out gets
+    a one-time 1.5× extension; if it still doesn't conclude but DID attempt exploitation,
+    its partial result is salvaged as SUSPECTED (ok=True) instead of a cold legacy pass."""
+    from collections import deque
     sink = c["location"]
     b = ctx.state.get("budget", {})
-    steps = b.get("validator_steps", settings.validator_steps)
-    # reuse setup (test creds / login flow / schema) discovered by an earlier candidate,
-    # and the persistent cookie jar, so later verifications skip cold-start rediscovery.
+    # reuse the preheat/earlier setup (test creds, role sessions, schema, cookie jars).
     setup = ctx.state.get("verify_setup")
-    reuse = (f"\n【可复用的搭建/鉴权上下文（前一漏洞核验已建立，勿重复发现）】：{setup}\n"
-             f"容器内 /tmp/vjar 保存着上一次的会话 Cookie，http_probe 会自动携带，可直接复用登录态。\n"
-             if setup else "")
+    sessions = ctx.state.get("verify_sessions") or {}
+    reuse = ""
+    if setup or sessions:
+        reuse = f"\n【可复用的预热/搭建上下文（勿重复发现）】：{setup or ''}\n"
+        if sessions:
+            reuse += (f"已就绪的角色会话（http_probe 传 session=对应名即可复用登录态，无需重登）：{sessions}\n")
     user = (f"待核验候选：{c['vuln_type']}\n位置：{sink['file']}:{sink['line']}\n"
             f"来源：{c.get('origin')}  自评置信度：{c.get('self_confidence')}\n"
             f"发现理由：{c.get('rationale', '')}\n污点线索：\n{_taint_text(c)}\n\n"
             f"sink 附近代码：\n{_code_window(ctx.root, c)}\n\n"
             f"应用已在容器内运行（端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
             + reuse +
-            f"请深度核验并尽力实弹复现，最后调用 conclude（若你搭建了可复用的账号/会话，请在 setup_notes 中说明）。")
+            f"请深度核验并尽力实弹复现，最后调用 conclude（若你新建了可复用的账号/会话，请在 setup_notes 中说明）。")
     result: dict = {}
+    recent = deque(maxlen=4)        # rolling "did an exploit action succeed" window
+    progress = {"did_exploit": False, "last": ""}
+
+    def _exploit(name, args, res):
+        if not isinstance(res, dict):
+            return False
+        if name in ("http_probe", "sql_log"):
+            return "error" not in res and res.get("exit_code", 0) != -1
+        if name == "run_command":
+            cmd = (args.get("cmd") or "").lower()
+            if any(k in cmd for k in ("sqlmap", "nuclei", "curl", "mysql")):
+                return res.get("exit_code", 0) != -1
+        return False
 
     def on_step(reasoning, content, tool_names):
+        if content and not tool_names:
+            progress["last"] = content
         ctx.emit_reasoning_sync(run_id, reasoning=reasoning,
                                 output=(content if content and not tool_names else None), kind="verify")
 
@@ -165,7 +214,11 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict):
             result.update(args or {})
             note = (args or {}).get("setup_notes")
             if note and not ctx.state.get("verify_setup"):
-                ctx.state["verify_setup"] = note[:1200]
+                ctx.state["verify_setup"] = str(note)[:1200]
+        ex = _exploit(name, args, res)
+        if ex:
+            progress["did_exploit"] = True
+        recent.append(ex)
         summ = {k: res.get(k) for k in ("status", "exit_code", "ok", "note", "reproduced")
                 if isinstance(res, dict) and k in res}
         ctx.log_tool_sync(run_id, name, args, summ or {"via": "verify"},
@@ -177,25 +230,38 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict):
         lambda n, a: verify_tools.dispatch(env, ctx, n, a, sink),
         on_tool=on_tool, on_step=on_step, max_steps=steps, stop_tools={"conclude"},
         finalize_hint=finalize_hint, finalize_at=2,
-        timeout=b.get("llm_timeout_sec"), num_retries=b.get("llm_num_retries")))
+        timeout=b.get("llm_timeout_sec"), num_retries=b.get("llm_num_retries"),
+        extend_when=lambda: any(recent), extend_factor=settings.validator_step_extension,
+        extend_hard_cap=settings.validator_step_hard_cap))
 
-    v = result.get("verdict")
-    if v not in ("confirmed", "suspected", "rejected"):
-        v = "suspected"   # ended without a clear verdict → conservative (avoid false-negative)
-    verdict = {"verdict": v, "want_dynamic": False,
-               "confidence_reason": result.get("confidence_reason")
-               or result.get("evidence") or "深度核验：读全上下文并在常驻应用上实弹验证。",
-               "poc": result.get("poc", ""), "remediation": result.get("remediation", "")}
-    dynamic = None
-    if result.get("reproduced"):
-        dynamic = {"attempted": True, "reproduced": True, "poc_code": result.get("poc", ""),
-                   "request": None, "observation": result.get("evidence") or "验证官在常驻应用上实弹复现成功。",
-                   "sandbox_log": (result.get("evidence") or "")[:1800], "reason": None}
-    elif result:
+    if result:   # model concluded
+        v = result.get("verdict")
+        if v not in ("confirmed", "suspected", "rejected"):
+            v = "suspected"
+        verdict = {"verdict": v, "want_dynamic": False,
+                   "confidence_reason": result.get("confidence_reason")
+                   or result.get("evidence") or "深度核验：读全上下文并在常驻应用上实弹验证。",
+                   "poc": result.get("poc", ""), "remediation": result.get("remediation", "")}
+        if result.get("reproduced"):
+            dynamic = {"attempted": True, "reproduced": True, "poc_code": result.get("poc", ""),
+                       "request": None, "observation": result.get("evidence") or "验证官在常驻应用上实弹复现成功。",
+                       "sandbox_log": (result.get("evidence") or "")[:1800], "reason": None}
+        else:
+            dynamic = {"attempted": True, "reproduced": False,
+                       "observation": result.get("confidence_reason") or "未能在预算内实弹复现（静态结论有效）。",
+                       "reason": None}
+        return verdict, dynamic, True
+
+    if progress["did_exploit"]:   # salvage: attempted exploitation but ran out → SUSPECTED
+        verdict = {"verdict": "suspected", "want_dynamic": False,
+                   "confidence_reason": "深度核验已实弹尝试但未在步数内下最终结论；据现有进展保守判疑似，附部分证据。",
+                   "poc": (progress["last"] or "")[:1500], "remediation": ""}
         dynamic = {"attempted": True, "reproduced": False,
-                   "observation": result.get("confidence_reason") or "未能在预算内实弹复现（静态结论有效）。",
-                   "reason": None}
-    return verdict, dynamic, bool(result)
+                   "observation": "实弹尝试进行中被步数截断（已保留部分证据，未冷跑旧逻辑）。", "reason": None}
+        return verdict, dynamic, True
+
+    return {"verdict": "suspected", "want_dynamic": False, "confidence_reason": "",
+            "poc": "", "remediation": ""}, None, False   # stuck early → caller falls back
 
 
 async def _static_verify(ctx: AuditContext, run_id, c: dict, use_llm: bool) -> dict:

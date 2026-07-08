@@ -11,7 +11,7 @@ import time
 from .. import sandbox
 from ..config import settings
 from ..llm.gateway import llm
-from . import prompts, provision_tools
+from . import prompts, provision_tools, verify_tools
 from .context import AuditContext
 
 
@@ -37,10 +37,7 @@ async def run(ctx: AuditContext) -> dict:
     if prov.get("ready"):
         await ctx.emit("provision.ready", {"port": prov["port"], "by": "deterministic",
                                            "start": prov.get("start")})
-        # optional LLM enrichment: seed/migrate the DB so DB-backed vulns reproduce
-        if settings.provisioner_llm_enrich and llm.enabled and _needs_db_enrich(ctx):
-            await ctx.think(run_id, "应用已就绪；进一步由模型建表/迁移/seed 数据库，以支持数据库相关漏洞的动态复现。")
-            await asyncio.to_thread(_llm_provision, ctx, run_id, env, True)
+        await _maybe_preheat(ctx, run_id, env)
         await ctx.finish_agent(run_id, {"ready": True, "port": env["port"], "by": "deterministic"})
         return {"ready": True, "port": env["port"]}
 
@@ -51,6 +48,7 @@ async def run(ctx: AuditContext) -> dict:
 
     if env.get("ready"):
         await ctx.emit("provision.ready", {"port": env["port"], "by": "llm"})
+        await _maybe_preheat(ctx, run_id, env)
         out = {"ready": True, "port": env["port"], "by": "llm"}
     else:
         await ctx.emit("provision.failed", {"reason": env.get("gaveup") or prov.get("reason") or "未就绪"})
@@ -59,8 +57,60 @@ async def run(ctx: AuditContext) -> dict:
     return out
 
 
+async def _maybe_preheat(ctx: AuditContext, run_id, env: dict) -> None:
+    """After the app is up, run an LLM-driven, project-specific preheat so per-candidate
+    verification starts warm (test accounts, logged-in role sessions, seeded data, memo).
+    Subsumes the old DB-seeding enrichment."""
+    if not (settings.enable_provisioner_preheat and llm.enabled):
+        return
+    await ctx.think(run_id, "核验预热：按本项目自适应地准备可复用的测试账号/角色会话/数据，供后续逐个漏洞核验复用。")
+    await asyncio.to_thread(_preheat, ctx, run_id, env)
+    if ctx.state.get("verify_setup"):
+        await ctx.emit("preheat.ready", {"sessions": list((ctx.state.get("verify_sessions") or {}).keys())})
+
+
 def _needs_db_enrich(ctx: AuditContext) -> bool:
     return any(c.get("rule_id") == "sql-injection" for c in ctx.state.get("candidates", []))
+
+
+def _preheat(ctx: AuditContext, run_id, env: dict) -> None:
+    budget = ctx.state.get("budget", {})
+    deadline = time.time() + budget.get("provisioner_timeout_sec", settings.provisioner_timeout_sec)
+    result: dict = {}
+    user = (f"应用已在端口 {env.get('port')} 运行（基础路径 '{env.get('base_path', '')}'）。"
+            "请阅读本项目、判断后续漏洞核验会需要什么，并据此做好可复用准备（测试账号/角色会话/数据）。"
+            "完成后调用 preheat_ready。")
+
+    def on_step(reasoning, content, tool_names):
+        ctx.emit_reasoning_sync(run_id, reasoning=reasoning,
+                                output=(content if content and not tool_names else None), kind="provision")
+
+    def on_tool(name, args, res):
+        if name == "preheat_ready":
+            result.update(args or {})
+        summ = {k: res.get(k) for k in ("exit_code", "status", "ok", "note")
+                if isinstance(res, dict) and k in res}
+        ctx.log_tool_sync(run_id, name, args, summ or {"via": "preheat"},
+                          ok="error" not in (res or {}))
+
+    def dispatch(n, a):
+        if time.time() > deadline:
+            return {"error": "预热时间预算耗尽 — 请调用 preheat_ready 登记已完成的准备。"}
+        return verify_tools.dispatch(env, ctx, n, a)
+
+    finalize_hint = "预算即将用尽，请立即 preheat_ready 登记已完成的准备（若本项目无需准备也调用并说明）。"
+    try:
+        llm.agentic("provisioner", prompts.PREHEAT, user, verify_tools.PREHEAT_SCHEMAS, dispatch,
+                    on_tool=on_tool, on_step=on_step,
+                    max_steps=budget.get("preheat_max_steps", settings.preheat_max_steps),
+                    stop_tools={"preheat_ready"}, finalize_hint=finalize_hint, finalize_at=2,
+                    timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"))
+    except Exception:
+        pass
+    if result.get("memo"):
+        ctx.state["verify_setup"] = str(result["memo"])[:1500]
+    if isinstance(result.get("sessions"), dict):
+        ctx.state["verify_sessions"] = result["sessions"]
 
 
 def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -> None:
