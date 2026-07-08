@@ -63,7 +63,11 @@ class Settings(BaseSettings):
     # False = static-first (legacy default): use the one-shot judge, escalate to agentic
     #         only for high/critical + reproducible candidates.
     validator_agentic_first: bool = True
-    agentic_verify_limit: int = 3         # max candidates that get the heavy agentic verify (floor)
+    # Whether the AGENTIC_VERIFY_LIMIT quota applies at all. Default OFF → no quota:
+    # every eligible candidate gets the agentic verify (thorough, but higher token cost).
+    # Turn ON to cap agentic verifications at agentic_verify_limit (token guardrail).
+    enable_agentic_verify_limit: bool = False
+    agentic_verify_limit: int = 3         # max candidates that get the heavy agentic verify (floor; only when the quota is enabled)
     validator_steps: int = 12             # per-candidate agentic-verify tool-step cap (floor)
     max_agent_steps: int = 12             # generic per-agent loop cap
     max_candidates: int = 60              # cap candidates per task

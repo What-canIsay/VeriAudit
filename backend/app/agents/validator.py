@@ -39,6 +39,7 @@ async def run(ctx: AuditContext) -> dict:
     llm_left = budget.get("llm_triage_limit", settings.llm_triage_limit)
     agentic_left = budget.get("agentic_verify_limit", settings.agentic_verify_limit)
     agentic_first = settings.validator_agentic_first
+    limit_on = settings.enable_agentic_verify_limit   # off ⇒ no quota on agentic verify
     env = ctx.state.get("env")
     env_ready = bool(env and env.get("ready"))
 
@@ -64,7 +65,7 @@ async def run(ctx: AuditContext) -> dict:
         #                    reproducible candidates.
         # AGENTIC_VERIFY_LIMIT bounds token spend in both (candidates are severity-sorted).
         eligible = (not deterministic and llm.enabled and settings.enable_agentic_verify
-                    and env_ready and agentic_left > 0)
+                    and env_ready and (not limit_on or agentic_left > 0))
         if agentic_first:
             want_agentic = eligible
         else:

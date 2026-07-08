@@ -184,7 +184,15 @@ def assess(root: Path, depth: str) -> Tuple[Dict, Dict]:
 
     # --- overall task wall-clock: must encompass every phase we just budgeted ---
     hunt_alloc = budget["llm_hunt_steps"] * 12
-    verify_alloc = budget["max_verify"] * 15
+    # agentic verify is far heavier than the one-shot judge; size the verify window to
+    # how many candidates may run a full agentic session (unbounded when the quota is off).
+    agentic_on = settings.enable_agentic_verify and depth == "deep"
+    if agentic_on:
+        n_ag = (budget["max_verify"] if not settings.enable_agentic_verify_limit
+                else min(budget["agentic_verify_limit"], budget["max_verify"]))
+    else:
+        n_ag = 0
+    verify_alloc = n_ag * budget["validator_steps"] * 6 + max(0, budget["max_verify"] - n_ag) * 15
     provision_alloc = budget["provisioner_timeout_sec"] if depth == "deep" else 0
     task_timeout = 600 + hunt_alloc + verify_alloc + provision_alloc + 300
     budget["task_timeout_sec"] = int(max(fl.task_timeout_sec,
