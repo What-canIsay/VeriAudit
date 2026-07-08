@@ -60,6 +60,18 @@ export default function TaskConsole() {
   const counts = live === false ? (task?.counts || {}) : (Object.keys(sseCounts).length ? sseCounts : task?.counts || {});
   const bys = counts.by_severity || {};
 
+  // capability degradations (fallbacks) — dedup, so the user is never misled into
+  // thinking the system is running at max capability when it isn't.
+  const notices = (() => {
+    const seen = new Set<string>(); const out: any[] = [];
+    for (const e of events) {
+      if (e.event !== "degradation.notice") continue;
+      const k = (e.data?.mechanism || "") + "|" + (e.data?.detail || "");
+      if (seen.has(k)) continue; seen.add(k); out.push(e.data);
+    }
+    return out;
+  })();
+
   return (
     <div className="flex flex-col h-dvh">
       {/* header */}
@@ -96,6 +108,29 @@ export default function TaskConsole() {
           );
         })}
       </div>
+
+      {/* capability degradation banner */}
+      {notices.length > 0 && (
+        <div className="px-6 pt-3 shrink-0">
+          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2.5">
+            <div className="flex items-center gap-2 mb-1.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="text-sm font-semibold text-amber-300">能力降级提示 · 本次审计未在最大能力下运行</span>
+              <span className="chip text-amber-300/80 border-amber-500/40 ml-1">{notices.length}</span>
+            </div>
+            <ul className="space-y-1 pl-6">
+              {notices.map((n, i) => (
+                <li key={i} className="text-xs flex items-start gap-1.5">
+                  <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${n.severity === "error" ? "bg-critical" : "bg-amber-400"}`} />
+                  <span className={n.severity === "error" ? "text-critical" : "text-amber-200/90"}>
+                    <span className="font-medium">{n.mechanism}</span>：{n.detail}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* stat cards */}
       <div className="px-6 py-4 grid grid-cols-2 lg:grid-cols-5 gap-3 shrink-0">

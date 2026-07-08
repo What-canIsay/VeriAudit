@@ -109,6 +109,18 @@ class Settings(BaseSettings):
     # --- professional scanners (LLM-callable tools; graceful degradation if missing) ---
     enable_semgrep: bool = True           # semgrep_scan  (pattern SAST, breadth)
     enable_codeql: bool = False           # codeql_scan   (semantic dataflow, heavy; deep only)
+    # Call-graph precision ladder: use CodeQL to refine call edges (reachability + call_path)
+    # for no-build languages (python/js/ruby). Degrades to Tree-sitter on any failure. CodeQL
+    # is memory-heavy (~1.4GB) and can OOM on constrained machines → set false to disable.
+    enable_codeql_callgraph: bool = True
+    codeql_ram_mb: int = 1400             # RAM cap for codeql db-create / query
+    codeql_timeout_sec: int = 300         # per codeql step timeout (build/query)
+    # Joern: multi-language (incl. PHP/Go/Java, no build) call-graph fallback below CodeQL.
+    # Needs the joern-cli dir + a JDK 17+ (auto-detected under D:/Tools; override here).
+    enable_joern_callgraph: bool = True
+    joern_dir: str = ""                   # path to joern-cli (auto-detect if empty)
+    joern_java_home: str = ""             # JDK 17+ for joern (auto-detect if empty)
+    joern_timeout_sec: int = 420          # per joern step timeout (parse/query)
     enable_secret_scan: bool = True       # secret_scan   (gitleaks)
     enable_dependency_scan: bool = True   # dependency_scan (osv-scanner)
     scanner_timeout_sec: int = 180

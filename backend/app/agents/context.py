@@ -60,6 +60,18 @@ class AuditContext:
     async def think(self, run_id: Optional[str], text: str) -> None:
         await self.emit("agent.thinking", {"run_id": run_id, "text": text})
 
+    async def degrade(self, mechanism: str, detail: str, severity: str = "warn") -> None:
+        """Record a capability DEGRADATION (a fallback fired) so the UI can warn the user
+        that the system is not running at max capability. Persisted (tool='degradation')
+        so it also shows when a finished task is re-opened."""
+        with session_scope() as s:
+            s.add(ToolInvocation(task_id=self.task_id, agent=self.current_agent, tool="degradation",
+                                 args={"mechanism": mechanism},
+                                 result_summary={"mechanism": mechanism, "detail": detail, "severity": severity},
+                                 ok=(severity != "error")))
+        await self.emit("degradation.notice",
+                        {"mechanism": mechanism, "detail": detail, "severity": severity})
+
     # --- thread-safe variants (called from inside asyncio.to_thread worker) --- #
     def log_tool_sync(self, run_id: Optional[str], tool: str, args: dict,
                       summary: dict, ok: bool = True) -> None:

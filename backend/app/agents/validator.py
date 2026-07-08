@@ -181,9 +181,13 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
         reuse = f"\n【可复用的预热/搭建上下文（勿重复发现）】：{setup or ''}\n"
         if sessions:
             reuse += (f"已就绪的角色会话（http_probe 传 session=对应名即可复用登录态，无需重登）：{sessions}\n")
+    reach = c.get("reachability", {}) or {}
+    cg_path = reach.get("path")
+    cg_line = (f"调用图确认的可达路径（入口→sink）：{' → '.join(h.get('function','?') for h in cg_path)}\n"
+               if cg_path else "")
     user = (f"待核验候选：{c['vuln_type']}\n位置：{sink['file']}:{sink['line']}\n"
             f"来源：{c.get('origin')}  自评置信度：{c.get('self_confidence')}\n"
-            f"发现理由：{c.get('rationale', '')}\n污点线索：\n{_taint_text(c)}\n\n"
+            f"发现理由：{c.get('rationale', '')}\n污点线索：\n{_taint_text(c)}\n{cg_line}\n"
             f"sink 附近代码：\n{_code_window(ctx.root, c)}\n\n"
             f"应用已在容器内运行（端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
             + reuse +

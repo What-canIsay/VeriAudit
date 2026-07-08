@@ -7,6 +7,7 @@ const EVENT_NAMES = [
   "agent.reasoning", "agent.llm_output", "assess.ready",
   "tool.invoked", "tool.result", "plan.ready", "recon.ready",
   "candidate.recorded", "trace.ready", "provision.ready", "provision.failed", "preheat.ready",
+  "degradation.notice",
   "sandbox.poc_attempt",
   "finding.confirmed", "finding.rejected", "verify.ready", "report.ready",
   "task.finished",
@@ -86,6 +87,11 @@ export function timelineToEvents(items: any[]): LiveEvent[] {
         const o = it.summary?.output;
         if (r) out.push({ event: "agent.reasoning", data: { agent: it.agent, text: r }, ts, seq: seq++ });
         if (o) out.push({ event: "agent.llm_output", data: { text: o }, ts, seq: seq++ });
+      } else if (it.tool === "degradation") {
+        out.push({ event: "degradation.notice", data: {
+          mechanism: it.summary?.mechanism, detail: it.summary?.detail,
+          severity: it.summary?.severity || "warn",
+        }, ts, seq: seq++ });
       } else {
         out.push({ event: "tool.invoked", data: { tool: it.tool, agent: it.agent, args_brief: {} }, ts, seq: seq++ });
       }

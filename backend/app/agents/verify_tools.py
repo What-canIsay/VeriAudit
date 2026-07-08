@@ -44,6 +44,15 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
+        "name": "call_path", "description": "在跨过程调用图上查两处代码之间的函数调用链（入口→sink），用于确认可达性、构造精确 PoC。",
+        "parameters": {"type": "object", "properties": {
+            "from_file": {"type": "string"}, "from_line": {"type": "integer"},
+            "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
+            "required": ["from_file", "from_line", "to_file", "to_line"]}}},
+    {"type": "function", "function": {
+        "name": "who_calls", "description": "查有哪些函数调用了给定函数名（反向调用者），用于回溯到对外入口。",
+        "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
+    {"type": "function", "function": {
         "name": "search_vuln_kb", "description": "检索漏洞知识库（成因/利用手法/修复范式）。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
@@ -153,7 +162,8 @@ def _sql_log(env: dict, action: str, auth: str) -> dict:
 
 
 def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
-    if name in ("list_files", "read_file", "search_code", "analyze_dataflow", "search_vuln_kb"):
+    if name in ("list_files", "read_file", "search_code", "analyze_dataflow", "search_vuln_kb",
+                "call_path", "who_calls"):
         return read_tools.dispatch(ctx, name, args)
 
     if name == "http_probe":

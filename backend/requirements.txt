@@ -8,3 +8,6 @@ python-multipart>=0.0.9
 jinja2>=3.1
 # Offline SAST fallback for the semgrep_scan tool (pure-Python, no network).
 bandit>=1.7
+# Multi-language call graph + cross-procedure reachability (app/callgraph.py).
+tree-sitter>=0.21
+tree-sitter-language-pack>=0.2

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   Brain, Wrench, Radar, Bug, GitBranch, ShieldCheck, FileText,
-  Cpu, CheckCircle2, XCircle, FlaskConical, Circle, Container, Gauge,
+  Cpu, CheckCircle2, XCircle, FlaskConical, Circle, Container, Gauge, AlertTriangle,
 } from "lucide-react";
 import type { LiveEvent } from "../lib/useTaskEvents";
 import { agentMeta } from "../lib/format";
@@ -157,6 +157,16 @@ function renderRow(e: LiveEvent) {
           {Array.isArray(d.sessions) && d.sessions.length > 0 && (
             <span className="text-[11px] text-faint font-mono">会话: {d.sessions.join(", ")}</span>
           )}
+        </Row>
+      );
+    case "degradation.notice":
+      return (
+        <Row key={e.seq} tone="muted">
+          <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${d.severity === "error" ? "text-critical" : "text-amber-400"}`} />
+          <span className={`text-xs ${d.severity === "error" ? "text-critical" : "text-amber-300"}`}>
+            能力降级 · {d.mechanism}
+          </span>
+          <span className="text-[11px] text-faint truncate">{d.detail}</span>
         </Row>
       );
     case "provision.failed":

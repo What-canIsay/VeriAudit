@@ -35,6 +35,24 @@ VeriAudit 的名字（**Veri**fication + **Audit**）即定位：**把"验证"�
 
 ---
 
+## 跨过程可达性：精度阶梯与按语言配置
+
+调用图/可达性走**精度阶梯** `CodeQL > Joern > Tree-sitter > 文件启发式`。Tree-sitter 是"能跑但精度有限"的兜底，**一般不希望走到它**——要让 CodeQL/Joern 命中，需按**待审计项目的语言**准备好环境：
+
+| 项目语言 | 命中引擎 | 需要（除 CodeQL CLI / joern-cli + JDK17+ 外） |
+|---|---|---|
+| Python | CodeQL | — |
+| PHP | Joern | 宿主 `php` |
+| Go（编译型，免编译） | Joern | 宿主 `go` |
+| JS/TS | Joern | 宿主 `node` |
+| Java / C/C++ | Joern | —（纯 JVM 前端） |
+
+**未命中会自动降级，并在前端审计控制台顶部弹出醒目的"能力降级提示"横幅**（含具体原因与解决办法），绝不静默——LLM Mock 模式、Docker 不可用、扫描器缺失等降级同样醒目提示。完整的**按语言前置条件与系统配置**见 [`LAUNCH.md` §8.5](LAUNCH.md)。
+
+> 现实约束：无法保证对任意开源项目都命中 CodeQL/Joern；命中不了就降级并明确告知，而非假装满血运行。
+
+---
+
 ## 文档索引
 
 | 文档 | 内容 |

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from .. import analysis
+from .. import analysis, callgraph
 from ..db import session_scope
 from ..models import Candidate
 from .context import AuditContext
@@ -15,13 +15,23 @@ async def run(ctx: AuditContext) -> dict:
     entrypoints = ctx.state.get("entrypoints", [])
     reachable_n = 0
 
+    # call-graph precision: warn if we fell below the best achievable engine for this lang
+    cg = await asyncio.to_thread(callgraph.status, ctx.root)
+    await ctx.log_tool(run_id, "callgraph_engine", {"lang": cg["lang"]},
+                       {"engine": cg["engine"], "ideal": cg["ideal"]})
+    if cg["degraded"]:
+        await ctx.degrade("调用图精度",
+                          f"{cg['lang']} 项目本应命中 {cg['ideal'].upper()}，实际降级为 {cg['engine'].upper()}：{cg['reason']}",
+                          "warn")
+
     for c in cands:
         # enrich taint source for candidates that lack one (e.g. LLM/scanner-reported),
         # so reachability + dynamic sandbox reproduction can work on them too.
         if c.get("_source") is None:
             await asyncio.to_thread(_enrich_source, ctx.root, c)
         taint = await asyncio.to_thread(analysis.taint_trace, ctx.root, c)
-        reach = await asyncio.to_thread(analysis.reachability_check, ctx.root, c, entrypoints)
+        # laddered reachability: CodeQL > Joern > tree-sitter call graph > file heuristic
+        reach = await asyncio.to_thread(callgraph.reachability, ctx.root, c, entrypoints)
         c["taint"] = taint
         c["reachability"] = reach
         c["reachable"] = reach.get("reachable")
@@ -36,7 +46,9 @@ async def run(ctx: AuditContext) -> dict:
                     row.reachable = bool(reach.get("reachable"))
         await ctx.log_tool(run_id, "taint_trace+reachability",
                            {"sink": c["location"].get("file")},
-                           {"reachable": reach.get("reachable"), "conf": reach.get("confidence")})
+                           {"reachable": reach.get("reachable"), "conf": reach.get("confidence"),
+                            "engine": reach.get("engine", "heuristic"),
+                            "path_len": len(reach.get("path", []) or [])})
 
     out = {"traced": len(cands), "reachable": reachable_n}
     await ctx.emit("trace.ready", out)

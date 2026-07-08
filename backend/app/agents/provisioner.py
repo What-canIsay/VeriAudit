@@ -51,7 +51,9 @@ async def run(ctx: AuditContext) -> dict:
         await _maybe_preheat(ctx, run_id, env)
         out = {"ready": True, "port": env["port"], "by": "llm"}
     else:
-        await ctx.emit("provision.failed", {"reason": env.get("gaveup") or prov.get("reason") or "未就绪"})
+        reason = env.get("gaveup") or prov.get("reason") or "未就绪"
+        await ctx.emit("provision.failed", {"reason": reason})
+        await ctx.degrade("环境搭建", f"未能把目标应用搭起来（{reason}）：动态复现将回落逐候选轻量尝试/静态结论。", "warn")
         out = {"ready": False}
     await ctx.finish_agent(run_id, out)
     return out

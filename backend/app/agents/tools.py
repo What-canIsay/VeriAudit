@@ -59,6 +59,15 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
+        "name": "call_path", "description": "在跨过程调用图上查两处代码之间的函数调用链（如 入口点→sink），用于确认可达性并构造精确利用路径。",
+        "parameters": {"type": "object", "properties": {
+            "from_file": {"type": "string"}, "from_line": {"type": "integer"},
+            "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
+            "required": ["from_file", "from_line", "to_file", "to_line"]}}},
+    {"type": "function", "function": {
+        "name": "who_calls", "description": "在调用图上查有哪些函数调用了给定函数名（反向调用者），用于回溯到对外入口。",
+        "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
+    {"type": "function", "function": {
         "name": "search_vuln_kb", "description": "检索漏洞知识库（成因、利用手法、修复范式）。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
@@ -177,6 +186,13 @@ def dispatch(ctx, name: str, args: dict) -> dict:
             reach = analysis.reachability_check(root, cand, eps)
             return {"taint_path": taint["taint_path"], "has_source": taint["has_source"],
                     "reachability": reach}
+        if name == "call_path":
+            from .. import callgraph
+            return callgraph.call_path(root, args["from_file"], int(args["from_line"]),
+                                       args["to_file"], int(args["to_line"]))
+        if name == "who_calls":
+            from .. import callgraph
+            return callgraph.who_calls(root, args.get("symbol", ""))
         if name == "search_vuln_kb":
             return {"results": kb_lookup(args.get("query", ""), args.get("vuln_type", ""))}
         if name == "report_candidate":
