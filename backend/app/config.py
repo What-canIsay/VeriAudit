@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # + drives dynamic tools (sqlmap/nuclei/runtime debugging) against the standing app
     # to precisely CONFIRM/reproduce. Bounded like the hunt loop to keep token spend sane.
     enable_agentic_verify: bool = True
+    # True  = agentic-first: try the tool-driven agentic verify for every eligible
+    #         candidate, fall back to the legacy one-shot judge only when it fails.
+    # False = static-first (legacy default): use the one-shot judge, escalate to agentic
+    #         only for high/critical + reproducible candidates.
+    validator_agentic_first: bool = True
     agentic_verify_limit: int = 3         # max candidates that get the heavy agentic verify (floor)
     validator_steps: int = 12             # per-candidate agentic-verify tool-step cap (floor)
     max_agent_steps: int = 12             # generic per-agent loop cap

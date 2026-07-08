@@ -158,8 +158,9 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `ENABLE_CODEQL` | `false` | CodeQL 语义分析（重，深度档；需安装 codeql） |
 | `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（自适应下限；控 token） |
 | `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（自适应下限；控 token） |
-| `ENABLE_AGENTIC_VERIFY` | `true` | **深度核验**：对高危/严重且可复现的候选，验证官自主读全上下文 + 在常驻应用上用专业工具实弹复现（仅 deep + 已搭建环境时触发） |
-| `AGENTIC_VERIFY_LIMIT` | `3` | 每任务进入深度核验的候选数上限（自适应下限；控 token） |
+| `ENABLE_AGENTIC_VERIFY` | `true` | **深度核验**：验证官自主读全上下文 + 在常驻应用上用专业工具实弹复现（仅 deep + 已搭建环境时可用） |
+| `VALIDATOR_AGENTIC_FIRST` | `true` | 核验策略：`true`=**agentic 优先**（对每个符合条件的候选先做 agentic 深度核验，失败才回落旧的单轮判定）；`false`=**旧逻辑优先**（默认走单轮判定，仅高危/严重+可复现的候选才升级 agentic） |
+| `AGENTIC_VERIFY_LIMIT` | `3` | 每任务进入深度核验的候选数上限（自适应下限；两种策略下都作为 token 护栏，按严重度优先分配） |
 | `VALIDATOR_STEPS` | `12` | 单个候选深度核验的工具步数上限（自适应下限；鉴权类复现需要更多步） |
 | `LLM_TIMEOUT_SEC` / `LLM_NUM_RETRIES` | 90 / 1 | LLM 请求超时与重试（自适应下限；防挂起） |
 | `MAX_CANDIDATES` / `MAX_VERIFY` | 60 / 30 | 预算护栏（自适应下限） |

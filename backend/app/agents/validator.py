@@ -38,6 +38,7 @@ async def run(ctx: AuditContext) -> dict:
     do_dynamic = budget.get("dynamic_verification", False)
     llm_left = budget.get("llm_triage_limit", settings.llm_triage_limit)
     agentic_left = budget.get("agentic_verify_limit", settings.agentic_verify_limit)
+    agentic_first = settings.validator_agentic_first
     env = ctx.state.get("env")
     env_ready = bool(env and env.get("ready"))
 
@@ -54,31 +55,35 @@ async def run(ctx: AuditContext) -> dict:
 
         rule = rule_by_id(c.get("rule_id", ""))
         deterministic = c.get("rule_id") in _DETERMINISTIC_RULES or c.get("origin") in ("gitleaks", "osv")
-        # Escalate worthy candidates (high/critical, reproducible, standing env) to the
-        # agentic Validator: it reads cross-file context + drives dynamic tools to build a
-        # precise PoC and actually trigger the bug. Bounded by agentic_verify_limit.
-        escalate = (llm.enabled and settings.enable_agentic_verify and env_ready
-                    and agentic_left > 0 and not deterministic and rule and rule.get("reproducible")
-                    and c.get("_severity") in ("critical", "high"))
 
-        if escalate:
+        # The agentic Validator reads cross-file context + drives dynamic tools to build a
+        # precise PoC and actually trigger the bug. Two selection strategies (env var):
+        #   agentic-first  → try it for EVERY eligible candidate; fall back to legacy only
+        #                    when it fails to conclude.
+        #   static-first   → legacy judge by default; escalate only for high/critical +
+        #                    reproducible candidates.
+        # AGENTIC_VERIFY_LIMIT bounds token spend in both (candidates are severity-sorted).
+        eligible = (not deterministic and llm.enabled and settings.enable_agentic_verify
+                    and env_ready and agentic_left > 0)
+        if agentic_first:
+            want_agentic = eligible
+        else:
+            want_agentic = (eligible and rule and rule.get("reproducible")
+                            and c.get("_severity") in ("critical", "high"))
+
+        verdict = dynamic = None
+        if want_agentic:
             agentic_left -= 1
             await ctx.think(run_id, f"对 {c['vuln_type']} 进行深度核验：读全上下文 + 在常驻应用上实弹复现。")
-            verdict, dynamic = await _agentic_verify(ctx, run_id, c, env)
-        else:
+            verdict, dynamic, ok = await _agentic_verify(ctx, run_id, c, env)
+            if not ok:   # agentic produced no conclusion → fall back to legacy logic
+                await ctx.think(run_id, f"深度核验未得出结论，回落旧逻辑复核 {c['vuln_type']}。")
+                verdict = dynamic = None
+        if verdict is None:
             use_llm = llm.enabled and not deterministic and llm_left > 0
             if use_llm:
                 llm_left -= 1
-            verdict = await _static_verify(ctx, run_id, c, use_llm)
-            dynamic = None
-            want_dyn = verdict.get("want_dynamic", True)
-            if verdict["verdict"] != "rejected" and do_dynamic and want_dyn and rule and rule.get("reproducible"):
-                if env_ready:
-                    await ctx.think(run_id, f"向常驻应用环境发起 PoC 复现 {c['vuln_type']} …")
-                    dynamic = await asyncio.to_thread(sandbox.reproduce_via_env, ctx.root, c, env)
-                if dynamic is None:   # no standing env, or env-probe not applicable → ephemeral boot
-                    await ctx.think(run_id, f"在隔离沙箱中尝试复现 {c['vuln_type']} …")
-                    dynamic = await asyncio.to_thread(sandbox.try_reproduce, ctx.root, c)
+            verdict, dynamic = await _legacy_verify(ctx, run_id, c, rule, use_llm, do_dynamic, env, env_ready)
 
         if verdict["verdict"] == "rejected":
             rejected += 1
@@ -110,9 +115,28 @@ async def run(ctx: AuditContext) -> dict:
     return out
 
 
+async def _legacy_verify(ctx: AuditContext, run_id, c: dict, rule, use_llm: bool,
+                         do_dynamic: bool, env, env_ready: bool):
+    """The original one-shot static judge + deterministic dynamic probe. Primary path in
+    static-first mode; fallback when agentic verify fails. Returns (verdict, dynamic)."""
+    verdict = await _static_verify(ctx, run_id, c, use_llm)
+    dynamic = None
+    want_dyn = verdict.get("want_dynamic", True)
+    if verdict["verdict"] != "rejected" and do_dynamic and want_dyn and rule and rule.get("reproducible"):
+        if env_ready:
+            await ctx.think(run_id, f"向常驻应用环境发起 PoC 复现 {c['vuln_type']} …")
+            dynamic = await asyncio.to_thread(sandbox.reproduce_via_env, ctx.root, c, env)
+        if dynamic is None:   # no standing env, or env-probe not applicable → ephemeral boot
+            await ctx.think(run_id, f"在隔离沙箱中尝试复现 {c['vuln_type']} …")
+            dynamic = await asyncio.to_thread(sandbox.try_reproduce, ctx.root, c)
+    return verdict, dynamic
+
+
 async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict):
     """Deep verification: the model reads full context and drives dynamic tools against
-    the standing app to build a precise PoC and truly reproduce. Returns (verdict, dynamic)."""
+    the standing app to build a precise PoC and truly reproduce.
+    Returns (verdict, dynamic, ok) — ok=False when the model produced no conclusion
+    (ran out of steps / errored) so the caller can fall back to legacy logic."""
     sink = c["location"]
     b = ctx.state.get("budget", {})
     steps = b.get("validator_steps", settings.validator_steps)
@@ -170,7 +194,7 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict):
         dynamic = {"attempted": True, "reproduced": False,
                    "observation": result.get("confidence_reason") or "未能在预算内实弹复现（静态结论有效）。",
                    "reason": None}
-    return verdict, dynamic
+    return verdict, dynamic, bool(result)
 
 
 async def _static_verify(ctx: AuditContext, run_id, c: dict, use_llm: bool) -> dict:
