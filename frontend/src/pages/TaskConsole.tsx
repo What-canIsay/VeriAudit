@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Activity, FileText, X, ChevronRight, Loader2, CheckCircle2, AlertTriangle,
@@ -27,10 +27,26 @@ export default function TaskConsole() {
   const { events: liveEvents, status, phase, counts: sseCounts, finished, findingIds } =
     useTaskEvents(id, live === true);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [rejectedCount, setRejectedCount] = useState(0);
   const [selected, setSelected] = useState<Finding | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const [busy, setBusy] = useState(false);
+
+  // Pull the CURRENT findings straight from the DB (not just via live events). This is what
+  // surfaces findings confirmed BEFORE the console connected — those `finding.confirmed`
+  // events may have been evicted from the bounded SSE history, so we can't rely on them alone.
+  const inFlight = useRef(false);
+  const refreshFindings = useCallback(() => {
+    if (!id || inFlight.current) return;   // skip if a fetch is still pending (avoid pileup)
+    inFlight.current = true;
+    Promise.allSettled([
+      api.findings(id).then(setFindings),
+      api.findings(id, "REJECTED").then((r) => setRejectedCount(r.length)),
+    ]).finally(() => {
+      inFlight.current = false;
+    });
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -39,17 +55,26 @@ export default function TaskConsole() {
       setTask(t);
       const done = ["succeeded", "failed", "cancelled"].includes(t.status);
       setLive(!done);
+      refreshFindings();   // fetch existing findings for BOTH running and finished tasks
       if (done) {
-        api.findings(id).then(setFindings).catch(() => {});
         api.timeline(id).then((items) => setHistEvents(timelineToEvents(items))).catch(() => {});
       }
     });
-  }, [id]);
+  }, [id, refreshFindings]);
 
+  // event-driven refresh (fast path when a new finding is confirmed live)
   useEffect(() => {
     if (!id || live === false) return;
-    if (findingIds.length > 0 || finished) api.findings(id).then(setFindings).catch(() => {});
-  }, [id, live, findingIds.length, finished]);
+    if (findingIds.length > 0 || finished) refreshFindings();
+  }, [id, live, findingIds.length, finished, refreshFindings]);
+
+  // poll while the task is live, so findings appear even if their confirmation event was
+  // missed (SSE history is bounded / reconnects lose old events).
+  useEffect(() => {
+    if (!id || live === false || finished) return;
+    const t = setInterval(refreshFindings, 6000);
+    return () => clearInterval(t);
+  }, [id, live, finished, refreshFindings]);
 
   // when a live task finishes, refetch it once so finished_at freezes the elapsed timer.
   useEffect(() => {
@@ -88,7 +113,28 @@ export default function TaskConsole() {
   const events = live === false ? histEvents : liveEvents;
   const liveStatus = live === false ? (task?.status || "succeeded") : (status || task?.status || "running");
   const curPhase = live === false ? "report" : (phase || task?.phase || "plan");
-  const counts = live === false ? (task?.counts || {}) : (Object.keys(sseCounts).length ? sseCounts : task?.counts || {});
+
+  // While the task is RUNNING its DB counts aren't populated yet (reporter writes them at the
+  // end), so derive live counts from the fetched findings + rejected count. Once finished, use
+  // the authoritative counts (SSE task.finished / refetched task.counts).
+  const derivedCounts = useMemo(() => {
+    const by_severity: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    let cd = 0, cs = 0, sus = 0;
+    for (const f of findings) {
+      const lvl = f.severity?.level || "info";
+      by_severity[lvl] = (by_severity[lvl] || 0) + 1;
+      if (f.confidence === "CONFIRMED_DYNAMIC") cd++;
+      else if (f.confidence === "CONFIRMED_STATIC") cs++;
+      else if (f.confidence === "SUSPECTED") sus++;
+    }
+    return { confirmed_dynamic: cd, confirmed_static: cs, suspected: sus,
+             total_findings: cd + cs + sus, by_severity, rejected: rejectedCount };
+  }, [findings, rejectedCount]);
+
+  const isLiveRunning = live !== false && !finished;
+  const counts = isLiveRunning
+    ? derivedCounts
+    : (live === false ? (task?.counts || {}) : (Object.keys(sseCounts).length ? sseCounts : task?.counts || {}));
   const bys = counts.by_severity || {};
 
   // capability degradations (fallbacks) — dedup, so the user is never misled into

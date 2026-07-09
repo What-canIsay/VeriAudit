@@ -39,7 +39,10 @@ export const api = {
   resumeTask: (id: string) => fetch(`${BASE}/tasks/${id}/resume`, { method: "POST" }).then((r) => j<Task>(r)),
   cancelTask: (id: string) => fetch(`${BASE}/tasks/${id}/cancel`, { method: "POST" }).then((r) => j<Task>(r)),
   timeline: (id: string) => fetch(`${BASE}/tasks/${id}/timeline`).then((r) => j<TimelineItem[]>(r)),
-  findings: (id: string) => fetch(`${BASE}/tasks/${id}/findings`).then((r) => j<Finding[]>(r)),
+  findings: (id: string, confidence?: string) =>
+    fetch(`${BASE}/tasks/${id}/findings${confidence ? `?confidence=${encodeURIComponent(confidence)}` : ""}`).then(
+      (r) => j<Finding[]>(r)
+    ),
   finding: (id: string) => fetch(`${BASE}/findings/${id}`).then((r) => j<Finding>(r)),
   report: (id: string, format: string) =>
     fetch(`${BASE}/tasks/${id}/report?format=${format}`, { method: "POST" }).then((r) =>
