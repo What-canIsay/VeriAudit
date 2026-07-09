@@ -81,15 +81,20 @@ export default function TaskConsole() {
     if (id && finished) api.getTask(id).then(setTask).catch(() => {});
   }, [id, finished]);
 
-  // elapsed timer: ticks every second from started_at, freezes at finished_at.
-  const startedMs = task?.started_at ? Date.parse(task.started_at) : null;
-  const finishedMs = task?.finished_at ? Date.parse(task.finished_at) : null;
+  // elapsed timer: ticks every second from started_at, freezes when the task ends.
+  // parseTs treats the timestamps as UTC (the backend serializes naive UTC WITHOUT an
+  // offset; without this the browser adds its local offset → the timer starts at e.g. 8:00:00).
+  const startedMs = parseTs(task?.started_at);
+  const finishedMs = parseTs(task?.finished_at);
+  // terminal = the task has ended (from the SSE finished flag OR a terminal status), so the
+  // timer freezes even if the post-finish finished_at refetch hasn't landed / was blocked.
+  const terminal = finished || ["succeeded", "failed", "cancelled"].includes(task?.status || "");
   useEffect(() => {
-    if (finishedMs || !startedMs) return;
+    if (terminal || startedMs == null) return;
     const t = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [finishedMs, startedMs]);
-  const elapsedMs = startedMs ? (finishedMs || nowMs) - startedMs : null;
+  }, [terminal, startedMs]);
+  const elapsedMs = startedMs == null ? null : (terminal ? (finishedMs ?? nowMs) : nowMs) - startedMs;
 
   async function doControl(action: "pause" | "resume" | "cancel") {
     if (!id || busy) return;
@@ -355,4 +360,13 @@ function fmtElapsed(ms: number | null): string {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   const pad = (n: number) => String(n).padStart(2, "0");
   return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
+
+// Parse a backend timestamp. The backend serializes naive UTC WITHOUT a timezone offset;
+// treat an offset-less string as UTC (not the browser's local zone) to avoid an 8h skew.
+function parseTs(s?: string | null): number | null {
+  if (!s) return null;
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z";
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : ms;
 }
