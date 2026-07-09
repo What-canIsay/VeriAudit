@@ -158,7 +158,7 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `PROVISIONER_CMD_TIMEOUT_SEC` | `240` | 单条搭建命令超时（自适应下限；需构建的项目会自动放大） |
 | `ENABLE_SEMGREP` / `ENABLE_SECRET_SCAN` / `ENABLE_DEPENDENCY_SCAN` | `true` | 专业工具（Semgrep / Gitleaks / OSV）开关 |
 | `ENABLE_CODEQL` | `false` | CodeQL 语义分析扫描（重，深度档；需安装 codeql） |
-| `ENABLE_CODEQL_CALLGRAPH` | `true` | 调用图精度阶梯之首：CodeQL 精化跨过程调用边(**已实现并验证:python**;免构建、精度高)。吃内存(~1.4GB)可能 OOM 降级,机器紧张可设 `false` |
+| `ENABLE_CODEQL_CALLGRAPH` | `true` | 调用图精度阶梯之首：CodeQL 精化跨过程调用边(**已实现并验证:python / javascript / typescript**;免构建、精度高)。吃内存(~1.4GB)可能 OOM 降级,机器紧张可设 `false` |
 | `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` | 1400 / 300 | CodeQL 建库/查询的内存上限与超时 |
 | `ENABLE_JOERN_CALLGRAPH` | `true` | 阶梯第二级：Joern 多语言调用图(**已验证:PHP / Go / Python**;Java/JS 前端就绪)。**免构建**——含 Go 等编译型语言直接解析源码,无需编译。需 joern-cli + JDK17+(自动探测 `D:/Tools`);PHP/JS/Go 前端另需 `php`/`node`/`go` |
 | `JOERN_DIR` / `JOERN_JAVA_HOME` / `JOERN_TIMEOUT_SEC` | 自动 / 自动 / 420 | joern-cli 目录、JDK17+ 路径(留空自动探测 D:/Tools)、单步超时 |
@@ -212,7 +212,7 @@ VeriAudit 的漏洞猎手（LLM）可**自主调用**以下专业工具（各司
 > ⚠️ 现实约束：无法保证对任意开源项目都命中。本表列出命中所需的前置条件；缺失即降级到 Tree-sitter。
 
 **一次性前置（无论什么语言）**
-- **CodeQL**（给 Python 高精度）：安装 CodeQL CLI，置于 PATH；`ENABLE_CODEQL_CALLGRAPH=true`（默认）。约需 1.4GB 空闲内存。
+- **CodeQL**（给 Python / JavaScript / TypeScript 高精度）：安装 CodeQL CLI，置于 PATH；`ENABLE_CODEQL_CALLGRAPH=true`（默认）。约需 1.4GB 空闲内存。
 - **Joern**（覆盖其余语言，免构建）：需 `joern-cli` + **JDK 17+**。默认自动探测 `D:/Tools/joern-cli` 与 `D:/Tools/jdk-2x`；否则设 `JOERN_DIR` / `JOERN_JAVA_HOME`。`ENABLE_JOERN_CALLGRAPH=true`（默认）。部分前端（如 PHP）峰值需约 4GB 内存。
 - **外部前端工具必须在"启动后端的那个 shell 的 PATH"上**（后端进程继承该 PATH）；否则对应语言的 Joern 前端会失败降级。
 
@@ -220,21 +220,22 @@ VeriAudit 的漏洞猎手（LLM）可**自主调用**以下专业工具（各司
 
 | 项目语言 | 命中引擎 | 除上面外，还需安装 | 是否需编译 | 验证状态 |
 |---|---|---|---|---|
-| Python | CodeQL | 无（CodeQL 直接解析） | 否 | ✅ 已验证 |
+| Python | CodeQL | 无（CodeQL 直接解析） | 否 | ✅ 已验证（调用图 + 污点数据流） |
+| JavaScript / TypeScript | CodeQL | 无（CodeQL 直接解析，TS 复用 js 提取器；**不需要 Node**） | 否 | ✅ 已验证（调用图 + 污点数据流，靶例 source→sink 命中） |
 | Java | Joern | 无（javasrc2cpg 纯 JVM，用 JDK17+ 即可，**不需要项目自己的 JDK**） | 否 | 前端就绪，未跑真实项目 |
 | Go | Joern | **Go 工具链**（`go` 在 PATH） | **否**（直接解析源码） | ✅ 已验证 |
 | PHP | Joern | **PHP CLI**（`php` 在 PATH；本机已装 `D:/Tools/php` 并自动加入） | 否 | ✅ 已验证 |
-| JavaScript / TypeScript | Joern | **Node.js**（`node` 在 PATH） | 否 | 前端就绪，未跑真实项目 |
+| Ruby | Joern | 无 | 否 | CodeQL 支持但其数据流库在有限内存下编译过重、且暂无验证靶例，故留给 Joern；未验证 |
 | C / C++ | Joern | 无（c2cpg 纯 JVM，模糊解析；精度视头文件而定） | 否 | 未验证 |
 | C# | Joern | **.NET SDK**（`dotnet` 在 PATH） | 否 | 未验证 |
-| Ruby / Kotlin | Joern | 无 / 可能需 Kotlin | 否 | 未验证 |
+| Kotlin | Joern | 可能需 Kotlin | 否 | 未验证 |
 
 **配置本系统（相关环境变量，详见第 7 节表）**
 - `ENABLE_CODEQL_CALLGRAPH` / `ENABLE_JOERN_CALLGRAPH`：两级开关（默认开）。
 - `JOERN_DIR` / `JOERN_JAVA_HOME`：joern-cli 目录与 JDK17+（留空自动探测 `D:/Tools`）。
 - `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` / `JOERN_TIMEOUT_SEC`：内存与超时（内存不足或超时会降级）。
 
-**智能体查看调用图的方式**（导航式、有界、带 file:line 锚点，猎手/验证官按需调用）：`cg_overview`（攻击面概览）、`cg_callers`/`cg_callees`（谁调它/它调谁，带调用点行号，`offset` 翻页）、`cg_reachable`（危险点是否可从入口到达 + 入口→sink 链 + 有几个入口可达）、`cg_path`（两点调用链）、`cg_subgraph`（某函数周围 N 跳子图）、`cg_dataflow`（**污点数据流**：判断污点是否真的从 source 流到 sink，比"控制可达"更强更准；走 **CodeQL>Joern 阶梯**——Python 用 CodeQL 语义污点、其余语言用 Joern `reachableByFlows`；较重、按需少量用）。每个结果都带"图可能有错/缺边、不可达≠安全、务必 read_file 核实"的显式提示。
+**智能体查看调用图的方式**（导航式、有界、带 file:line 锚点，猎手/验证官按需调用）：`cg_overview`（攻击面概览）、`cg_callers`/`cg_callees`（谁调它/它调谁，带调用点行号，`offset` 翻页）、`cg_reachable`（危险点是否可从入口到达 + 入口→sink 链 + 有几个入口可达）、`cg_path`（两点调用链）、`cg_subgraph`（某函数周围 N 跳子图）、`cg_dataflow`（**污点数据流**：判断污点是否真的从 source 流到 sink，比"控制可达"更强更准；走 **CodeQL>Joern 阶梯**——Python / JavaScript / TypeScript 用 CodeQL 语义污点、其余语言用 Joern `reachableByFlows`；较重、按需少量用）。每个结果都带"图可能有错/缺边、不可达≠安全、务必 read_file 核实"的显式提示。
 
 **降级会怎样提示**：一旦命中的引擎低于该语言的理想引擎（如 Python 没走到 CodeQL、Go/PHP 没走到 Joern），前端审计控制台顶部会显示**"能力降级提示"横幅**，并给出**具体原因与解决办法**（缺 codeql / 缺 JDK17+ / 缺 php·node·go / 内存不足 / 已被开关关闭）。同理，**LLM Mock 模式、Docker 不可用、专业扫描器缺失**等降级也会在此横幅醒目提示，避免误以为系统在满血运行。
 

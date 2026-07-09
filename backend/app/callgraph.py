@@ -358,11 +358,13 @@ def _primary_lang(root: Path) -> str:
 # High-precision EDGE providers (CodeQL / Joern). Return (edge_tuples, engine) or None.
 # Wrapped by callers so ANY failure degrades to the Tree-sitter edges.
 # --------------------------------------------------------------------------- #
-# Languages we auto-run CodeQL edge-refinement on. VERIFIED: python only (query bundled +
-# tested). javascript/ruby: no-build & CodeQL-supported, but the calls.ql is NOT written
-# yet → they degrade to Tree-sitter (add cg_queries/<lang>/calls.ql to enable). go/java/
-# csharp need a successful build (fragile) → not auto-run. CodeQL has NO PHP → Tree-sitter.
-_CODEQL_LANG = {"python": "python"}
+# Languages we auto-run CodeQL edge-refinement on. VERIFIED: python + javascript/typescript
+# (calls.ql + dataflow.ql bundled & tested against known source->sink fixtures). TS reuses the
+# CodeQL "javascript" extractor. ruby: CodeQL-supported & no-build, but its dataflow libraries
+# are heavy to compile under limited RAM and we have no verified fixture → left to Joern (add
+# cg_queries/ruby/*.ql once verified to enable). go/java/csharp need a successful build (fragile)
+# → not auto-run, handled by Joern. CodeQL has NO PHP extractor → Tree-sitter / Joern.
+_CODEQL_LANG = {"python": "python", "javascript": "javascript", "typescript": "javascript"}
 
 
 def _codeql_packs(codeql: str) -> Optional[str]:
@@ -852,9 +854,9 @@ _JOERN_FRONTEND_TOOL = {"php": "php", "javascript": "node", "typescript": "node"
 
 
 def _ideal_engine(lang: str) -> str:
-    if lang == "python":
-        return "codeql"          # bundled query + no build
-    if lang in ("php", "javascript", "typescript", "go", "java", "ruby", "c", "cpp", "csharp"):
+    if lang in _CODEQL_LANG:
+        return "codeql"          # bundled query + no build (python, javascript, typescript)
+    if lang in ("php", "go", "java", "ruby", "c", "cpp", "csharp"):
         return "joern"
     return "treesitter"
 

@@ -42,10 +42,10 @@ VeriAudit 的名字（**Veri**fication + **Audit**）即定位：**把"验证"�
 | 项目语言 | 命中引擎 | 需要（除 CodeQL CLI / joern-cli + JDK17+ 外） |
 |---|---|---|
 | Python | CodeQL | — |
+| JS / TS | CodeQL | —（CodeQL 直接解析，**不需要 node**） |
 | PHP | Joern | 宿主 `php` |
 | Go（编译型，免编译） | Joern | 宿主 `go` |
-| JS/TS | Joern | 宿主 `node` |
-| Java / C/C++ | Joern | —（纯 JVM 前端） |
+| Java / C/C++ / Ruby | Joern | —（纯 JVM 前端） |
 
 **未命中会自动降级，并在前端审计控制台顶部弹出醒目的"能力降级提示"横幅**（含具体原因与解决办法），绝不静默——LLM Mock 模式、Docker 不可用、扫描器缺失等降级同样醒目提示。完整的**按语言前置条件与系统配置**见 [`LAUNCH.md` §8.5](LAUNCH.md)。
 
