@@ -28,7 +28,7 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "pattern": {"type": "string"}, "max": {"type": "integer"}}, "required": ["pattern"]}}},
     {"type": "function", "function": {
-        "name": "detect_setup", "description": "返回项目的搭建线索：存在哪些构建/配置文件、CI 工作流、检测到的框架与启动方式猜测。",
+        "name": "detect_setup", "description": "返回项目的搭建线索：【应优先 read_file 的部署/搭建文档 docs_read_first（README / LAUNCH / INSTALL / DEPLOY / docs/ 等，通常直接写了怎么部署）】、存在哪些构建/配置文件、CI 工作流、检测到的框架与启动方式猜测。",
         "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {
         "name": "run_command", "description": "在沙箱容器内执行 shell 命令（装依赖/迁移/建库/seed 等）。工作目录为项目根。返回 stdout/stderr/exit_code。",
@@ -53,7 +53,30 @@ TOOL_SCHEMAS: List[dict] = [
 
 _SETUP_FILES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "Dockerfile",
                 "Makefile", "requirements.txt", "pyproject.toml", "setup.py", "package.json",
-                "manage.py", "Procfile", ".env.example", "README.md", "README.rst"]
+                "manage.py", "Procfile", ".env.example", ".env.sample", "README.md", "README.rst"]
+
+# filename stems that usually contain deployment / setup instructions — read these FIRST
+_DOC_HINTS = ("readme", "launch", "install", "deploy", "deployment", "setup", "getting_started",
+              "getting-started", "gettingstarted", "quickstart", "quick_start", "usage",
+              "docker", "run", "build", "development", "contributing", "hacking")
+
+
+def _find_docs(root: Path) -> list:
+    """Documentation files likely to explain how to deploy/set up the project (top-level
+    README/LAUNCH/INSTALL/... + the docs/ directory), so the Provisioner reads them first."""
+    docs: list = []
+    try:
+        for p in sorted(root.iterdir()):
+            if p.is_file() and p.suffix.lower() in (".md", ".rst", ".txt", ""):
+                if any(h in p.stem.lower() for h in _DOC_HINTS):
+                    docs.append(p.name)
+        d = root / "docs"
+        if d.is_dir():
+            for p in sorted(d.iterdir())[:20]:
+                docs.append(f"docs/{p.name}")
+    except Exception:
+        pass
+    return docs[:30]
 
 
 def dispatch(env: dict, ctx, name: str, args: dict) -> dict:
@@ -67,7 +90,8 @@ def dispatch(env: dict, ctx, name: str, args: dict) -> dict:
         ci = [p.name for p in ci_dir.glob("*.y*ml")] if ci_dir.exists() else []
         pys = sandbox._py_files(root)
         start = sandbox._derive_start(root, pys)
-        return {"present": present, "ci_workflows": ci,
+        return {"docs_read_first": _find_docs(root),   # 部署/搭建说明通常在这些文档里，先读它们
+                "present": present, "ci_workflows": ci,
                 "frameworks": sandbox._detect_frameworks(pys),
                 "start_guess": {"command": start[0], "port": start[1]} if start else None}
 

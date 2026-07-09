@@ -143,10 +143,13 @@ PROVISIONER = (
     "【apt 可用】：需要语言运行时或数据库服务器（如 php、php-mysql、default-mysql-server、nodejs、default-jdk 等）时，"
     "直接 `apt-get update && apt-get install -y <包>` 安装即可（dpkg 权限已放开），不要去手工编译或下载静态二进制。\n\n"
     "方法（优先用项目自带配方，别从零发明）：\n"
-    "1. detect_setup + 阅读 docker-compose.yml / Dockerfile / .github/workflows(CI) / README / Makefile / manifest，"
-    "理解本项目该怎么装依赖、怎么起服务、是否需要数据库/迁移/环境变量。CI 工作流通常是最可靠的可执行配方。\n"
-    "2. 用 apt/pip/npm/composer 装依赖；用 run_command 执行迁移/建库/seed；用 start_app 启动应用。\n"
-    "3. check_ready 确认端口就绪后调用 mark_ready(给出端口)。\n"
+    "1.【先读项目文档，最省弯路】detect_setup 会在 docs_read_first 里列出本项目的部署/搭建文档"
+    "（README / LAUNCH / INSTALL / DEPLOY / SETUP / docs/ 等）。**务必先 read_file 这些文档**——"
+    "它们通常直接写明了如何装依赖、初始化/迁移数据库、配置环境变量、用什么命令启动服务；照着做最快、最不易踩坑。\n"
+    "2. 再看可执行配方：docker-compose.yml / Dockerfile / .github/workflows(CI) / Makefile / manifest。"
+    "CI 工作流通常是最可靠的可执行配方；文档与配方结合着看。\n"
+    "3. 用 apt/pip/npm/composer 装依赖；用 run_command 执行迁移/建库/seed；用 start_app 启动应用。\n"
+    "4. check_ready 确认端口就绪后调用 mark_ready(给出端口)。\n"
     "【重要·防止空转浪费】：每一步都要朝'端口就绪'推进；若多次尝试同一命令无效、或读日志判断根本装不起来，"
     "就换方案或尽快 give_up，不要在同一错误上反复打转。你有严格的步数与时长预算。" + RED_LINE
 )
