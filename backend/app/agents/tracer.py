@@ -21,39 +21,51 @@ async def run(ctx: AuditContext) -> dict:
     cands = ctx.state.get("candidates", [])
     entrypoints = ctx.state.get("entrypoints", [])
     engine = ctx.state.get("callgraph_engine")
-    reachable_n = 0
-    semantic_n = 0
-    # the call graph was built (and any degradation reported) in Recon; reuse the cache.
     # pick the (bounded) subset of candidates that get the heavier semantic-taint upgrade.
     sem_cap = _semantic_budget(ctx, engine, cands)
     sem_targets = {id(c) for c in _rank(cands)[:sem_cap]} if sem_cap else set()
 
+    # WARM-UP (serial): build the shared call graph + (if semantic taint will run) the CodeQL
+    # DB / Joern CPG and compile the query ONCE, before fanning out. Build locks make this
+    # correctness-safe, but warming here also avoids N workers each paying the ~compile cost.
+    await asyncio.to_thread(callgraph.get_graph, ctx.root)
+    warmed = set()
+    if sem_targets:
+        first = next((c for c in _rank(cands) if id(c) in sem_targets), None)
+        if first is not None:
+            await asyncio.to_thread(_compute_one, ctx.root, first, engine, entrypoints, True)
+            warmed.add(id(first))
+
+    # PARALLEL (bounded): compute taint + reachability per candidate concurrently. Each worker
+    # mutates only ITS OWN candidate dict and reads the shared read-only caches, so results are
+    # identical to serial — this is a pure latency win. Concurrency bounds heavy CodeQL/Joern
+    # dataflow subprocesses (memory). No DB/events here (see the serial pass below).
+    conc = max(1, int(getattr(settings, "tracer_concurrency", 4)))
+    sem = asyncio.Semaphore(conc)
+
+    async def work(c):
+        if id(c) in warmed:
+            return
+        async with sem:
+            await asyncio.to_thread(_compute_one, ctx.root, c, engine, entrypoints,
+                                    id(c) in sem_targets)
+
+    await asyncio.gather(*(work(c) for c in cands))
+
+    # PERSIST + EVENTS (serial): SQLite writes serialized, stable timeline order.
+    reachable_n = semantic_n = 0
     for c in cands:
-        # enrich taint source for candidates that lack one (e.g. LLM/scanner-reported),
-        # so reachability + semantic taint + dynamic reproduction can work on them too.
-        if c.get("_source") is None:
-            await asyncio.to_thread(_enrich_source, ctx.root, c)
-        taint = await asyncio.to_thread(analysis.taint_trace, ctx.root, c)
-        # semantic taint (CodeQL/Joern): does untrusted data ACTUALLY flow source→sink?
-        # stronger than heuristic taint + control reachability. Positive signal only —
-        # a "no" may just be a missed edge, so it never rejects (that's the Validator's job).
-        if id(c) in sem_targets:
-            sem = await asyncio.to_thread(_semantic_taint, ctx.root, c, engine)
-            if sem:
-                taint["semantic"] = sem
-                semantic_n += 1
-        # laddered reachability: CodeQL > Joern > tree-sitter call graph > file heuristic
-        reach = await asyncio.to_thread(callgraph.reachability, ctx.root, c, entrypoints)
-        c["taint"] = taint
-        c["reachability"] = reach
-        c["reachable"] = reach.get("reachable")
+        reach = c.get("reachability", {}) or {}
+        taint = c.get("taint", {}) or {}
         if reach.get("reachable"):
             reachable_n += 1
+        if taint.get("semantic"):
+            semantic_n += 1
         if c.get("db_id"):
             with session_scope() as s:
                 row = s.get(Candidate, c["db_id"])
                 if row:
-                    row.taint_path = taint["taint_path"]
+                    row.taint_path = taint.get("taint_path")
                     row.reachability = reach
                     row.reachable = bool(reach.get("reachable"))
         await ctx.log_tool(run_id, "taint_trace+reachability",
@@ -67,6 +79,22 @@ async def run(ctx: AuditContext) -> dict:
     await ctx.emit("trace.ready", out)
     await ctx.finish_agent(run_id, out)
     return out
+
+
+def _compute_one(root, c, engine, entrypoints, do_sem: bool) -> None:
+    """Deterministic per-candidate enrichment (runs in a worker thread). Mutates ONLY this
+    candidate dict; reads shared read-only caches → safe to run concurrently."""
+    if c.get("_source") is None:
+        _enrich_source(root, c)
+    taint = analysis.taint_trace(root, c)
+    if do_sem:
+        sem = _semantic_taint(root, c, engine)
+        if sem:
+            taint["semantic"] = sem
+    reach = callgraph.reachability(root, c, entrypoints)
+    c["taint"] = taint
+    c["reachability"] = reach
+    c["reachable"] = reach.get("reachable")
 
 
 def _rank(cands):

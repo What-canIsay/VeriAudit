@@ -23,11 +23,19 @@ import hashlib
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from . import analysis
 from .config import DATA_DIR, settings
+
+# Build locks: the shared call graph / CodeQL DB / Joern CPG must be built ONCE even when
+# multiple workers (parallel Tracer) call in concurrently — double-checked locking so the
+# already-built fast path never blocks, but a concurrent first-build can't race/corrupt.
+_GRAPH_LOCK = threading.Lock()
+_DB_LOCK = threading.Lock()
+_CPG_LOCK = threading.Lock()
 
 try:
     from tree_sitter_language_pack import get_parser
@@ -324,7 +332,11 @@ def get_graph(root: Path) -> Optional[Graph]:
     Tree-sitter provides function spans; CodeQL (>Joern) refine the EDGES when available.
     Both the reachability gate and the call_path/who_calls tools share this graph."""
     key = str(root)
-    if key not in _CACHE:
+    if key in _CACHE:
+        return _CACHE.get(key)
+    with _GRAPH_LOCK:
+        if key in _CACHE:                 # built while we waited for the lock
+            return _CACHE.get(key)
         g = _build_ts(root)               # spans + baseline edges (always, multi-language)
         if g is not None:
             lang = _primary_lang(root)
@@ -373,18 +385,20 @@ def _codeql_packs(codeql: str) -> Optional[str]:
 
 
 def _codeql_db(root: Path, cql_lang: str, codeql: str) -> Optional[Path]:
-    import hashlib
     cache = DATA_DIR / "codeql" / (hashlib.md5(str(root).encode()).hexdigest()[:12] + "-" + cql_lang)
     if (cache / "codeql-database.yml").exists():
         return cache
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        r = subprocess.run([codeql, "database", "create", str(cache), f"--language={cql_lang}",
-                            f"--source-root={root}", "--overwrite", f"--ram={settings.codeql_ram_mb}"],
-                           capture_output=True, timeout=settings.codeql_timeout_sec)
-        return cache if (r.returncode == 0 and (cache / "codeql-database.yml").exists()) else None
-    except Exception:
-        return None
+    with _DB_LOCK:   # only ONE builder even under parallel dataflow; others reuse the result
+        if (cache / "codeql-database.yml").exists():
+            return cache
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            r = subprocess.run([codeql, "database", "create", str(cache), f"--language={cql_lang}",
+                                f"--source-root={root}", "--overwrite", f"--ram={settings.codeql_ram_mb}"],
+                               capture_output=True, timeout=settings.codeql_timeout_sec)
+            return cache if (r.returncode == 0 and (cache / "codeql-database.yml").exists()) else None
+        except Exception:
+            return None
 
 
 def _codeql_edges(root: Path, lang: str):
@@ -473,13 +487,15 @@ def _ensure_joern_cpg(root: Path):
     cpg = cache.with_suffix(".cpg.bin")
     env = _joern_env(java)
     if not cpg.exists():
-        try:
-            subprocess.run(_joern_launch(joern, "joern-parse") + [str(root), "-o", str(cpg)],
-                           env=env, capture_output=True, timeout=settings.joern_timeout_sec)
-        except Exception:
-            return None
-        if not cpg.exists():
-            return None
+        with _CPG_LOCK:   # build the CPG once even under parallel dataflow
+            if not cpg.exists():
+                try:
+                    subprocess.run(_joern_launch(joern, "joern-parse") + [str(root), "-o", str(cpg)],
+                                   env=env, capture_output=True, timeout=settings.joern_timeout_sec)
+                except Exception:
+                    return None
+                if not cpg.exists():
+                    return None
     return cpg, joern, java, env
 
 
@@ -553,12 +569,15 @@ def _codeql_dataflow(root: Path, lang: str, from_file: str, from_line: int,
     if not db:
         return None
     packs = _codeql_packs(codeql)
+    # per-call unique temp filenames → parallel dataflow queries never clobber each other's
+    # source/sink CSVs or output (fixed names would corrupt concurrent results).
+    tok = hashlib.md5(f"{from_file}:{from_line}:{to_file}:{to_line}".encode()).hexdigest()[:10]
+    src = db / f"df_src_{tok}.csv"
+    snk = db / f"df_snk_{tok}.csv"
+    out = db / f"df_{tok}.bqrs"
     try:
-        src = db / "df_src.csv"
-        snk = db / "df_snk.csv"
         src.write_text(f"{from_file.replace(chr(92), '/')},{int(from_line)}\n", encoding="utf-8")
         snk.write_text(f"{to_file.replace(chr(92), '/')},{int(to_line)}\n", encoding="utf-8")
-        out = db / "df.bqrs"
         cmd = [codeql, "query", "run", "--database", str(db), "--output", str(out),
                f"--ram={settings.codeql_ram_mb}",
                f"--external=srcloc={src}", f"--external=snkloc={snk}"]
@@ -590,6 +609,12 @@ def _codeql_dataflow(root: Path, lang: str, from_file: str, from_line: int,
                     " 【未发现数据流≠一定安全：可能污点源/汇点定位差一行，或走了动态/框架路径；请 read_file 核实并可换相邻行再查】")}
     except Exception:
         return None
+    finally:
+        for _f in (src, snk, out):
+            try:
+                _f.unlink()
+            except Exception:
+                pass
 
 
 def _joern_dataflow(root: Path, from_file: str, from_line: int, to_file: str, to_line: int) -> dict:
@@ -600,7 +625,9 @@ def _joern_dataflow(root: Path, from_file: str, from_line: int, to_file: str, to
     cpg, joern, java, env = ec
     ff, tf = from_file.replace("\\", "/"), to_file.replace("\\", "/")
     cpg_fwd = str(cpg).replace("\\", "/")
-    script = Path(str(cpg) + ".df.sc")
+    # per-call unique script → parallel Joern dataflow queries don't clobber one script file.
+    tok = hashlib.md5(f"{ff}:{from_line}:{tf}:{to_line}".encode()).hexdigest()[:10]
+    script = Path(str(cpg) + f".df_{tok}.sc")
     script.write_text(
         f'importCpg("{cpg_fwd}")\n'
         'run.ossdataflow\n'
@@ -623,6 +650,11 @@ def _joern_dataflow(root: Path, from_file: str, from_line: int, to_file: str, to
     except Exception:
         return {"available": True, "error": "数据流查询超时/失败（该项目可能过大）；请 read_file 人工判断。",
                 "note": _note("joern")}
+    finally:
+        try:
+            script.unlink()
+        except Exception:
+            pass
     count, paths, seen = None, [], set()
     for line in out.splitlines():
         if line.startswith("DFCOUNT="):

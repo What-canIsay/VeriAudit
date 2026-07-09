@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     enable_adaptive_budget: bool = True
     llm_hunt_steps: int = 16              # max tool-calling steps for the LLM-driven hunt
     llm_triage_limit: int = 16            # max candidates the LLM validator judges (rest heuristic)
+    # Tracer runs per-candidate taint/reachability concurrently; this bounds how many heavy
+    # CodeQL/Joern dataflow SUBPROCESSES run at once (each is memory-heavy ~1.4GB+). Raise it
+    # if you have RAM to spare (near-linear speedup); results are identical to serial.
+    tracer_concurrency: int = 4
     # agentic validation: for worthy candidates the Validator reads cross-file context
     # + drives dynamic tools (sqlmap/nuclei/runtime debugging) against the standing app
     # to precisely CONFIRM/reproduce. Bounded like the hunt loop to keep token spend sane.

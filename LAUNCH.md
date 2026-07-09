@@ -170,6 +170,7 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `RAG_MAX_CHUNK_LINES` / `RAG_CHUNK_OVERLAP` / `RAG_HASHING_DIM` | 120 / 15 / 512 | 代码块最大行数(超出窗口切分)、窗口重叠、词法回落维度 |
 | `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（自适应下限；控 token） |
 | `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（自适应下限；控 token） |
+| `TRACER_CONCURRENCY` | `4` | 污点追踪员**并行度**：逐候选污点/可达性并行计算，此值限制同时运行的重型 CodeQL/Joern 数据流子进程数（各 ~1.4GB+ 内存）。内存宽裕可调大（近线性提速，结果与串行**完全一致**）；OOM 则调小 |
 | `ENABLE_AGENTIC_VERIFY` | `true` | **深度核验**：验证官自主读全上下文 + 在常驻应用上用专业工具实弹复现（仅 deep + 已搭建环境时可用） |
 | `VALIDATOR_AGENTIC_FIRST` | `true` | 核验策略：`true`=**agentic 优先**（对每个符合条件的候选先做 agentic 深度核验，失败才回落旧的单轮判定）；`false`=**旧逻辑优先**（默认走单轮判定，仅高危/严重+可复现的候选才升级 agentic） |
 | `ENABLE_AGENTIC_VERIFY_LIMIT` | `false` | 是否启用深度核验的名额配额。默认 `false`=**不限名额**（每个符合条件的候选都做 agentic 深度核验，更彻底但更耗 token）；设 `true` 才用 `AGENTIC_VERIFY_LIMIT` 封顶 |
