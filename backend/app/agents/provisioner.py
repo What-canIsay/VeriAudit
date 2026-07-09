@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 
 from .. import sandbox
 from ..config import settings
@@ -107,6 +108,8 @@ def _preheat(ctx: AuditContext, run_id, env: dict) -> None:
             "请阅读本项目、判断后续漏洞核验会需要什么，并据此做好可复用准备（测试账号/角色会话/数据）。"
             "完成后调用 preheat_ready。")
 
+    recent = deque(maxlen=4)   # productive-progress window → one-time step extension
+
     def on_step(reasoning, content, tool_names):
         ctx.emit_reasoning_sync(run_id, reasoning=reasoning,
                                 output=(content if content and not tool_names else None), kind="provision")
@@ -114,6 +117,7 @@ def _preheat(ctx: AuditContext, run_id, env: dict) -> None:
     def on_tool(name, args, res):
         if name == "preheat_ready":
             result.update(args or {})
+        recent.append(_preheat_progress(name, res))
         summ = {k: res.get(k) for k in ("exit_code", "status", "ok", "note")
                 if isinstance(res, dict) and k in res}
         ctx.log_tool_sync(run_id, name, args, summ or {"via": "preheat"},
@@ -130,13 +134,27 @@ def _preheat(ctx: AuditContext, run_id, env: dict) -> None:
                     on_tool=on_tool, on_step=on_step,
                     max_steps=budget.get("preheat_max_steps", settings.preheat_max_steps),
                     stop_tools={"preheat_ready"}, finalize_hint=finalize_hint, finalize_at=2,
-                    timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"))
+                    timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"),
+                    extend_when=lambda: any(recent), extend_factor=settings.provisioner_step_extension,
+                    extend_hard_cap=settings.provisioner_step_hard_cap)
     except Exception:
         pass
     if result.get("memo"):
         ctx.state["verify_setup"] = str(result["memo"])[:1500]
     if isinstance(result.get("sessions"), dict):
         ctx.state["verify_sessions"] = result["sessions"]
+
+
+def _preheat_progress(name: str, res) -> bool:
+    """Preheat step counts as progress if a real setup action (shell / HTTP login / SQL)
+    actually ran rather than erroring or being a no-op read."""
+    if not isinstance(res, dict):
+        return False
+    if name == "run_command":
+        return res.get("exit_code", -1) != -1
+    if name in ("http_probe", "sql_log"):
+        return "error" not in res
+    return False
 
 
 def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -> None:
@@ -153,11 +171,16 @@ def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -
                 "需要数据库/迁移/seed/环境变量时，用 run_command 完成；用 start_app 启动；"
                 "check_ready 确认后 mark_ready(端口)。起不来就尽快 give_up。请高效，不要在同一错误上反复打转。")
 
+    # rolling "is this build making productive progress" window → drives the one-time step
+    # extension so a session that's close to booting the app isn't cut off at the last step.
+    recent = deque(maxlen=4)
+
     def on_step(reasoning, content, tool_names):
         ctx.emit_reasoning_sync(run_id, reasoning=reasoning,
                                 output=(content if content and not tool_names else None), kind="provision")
 
     def on_tool(name, args, result):
+        recent.append(_build_progress(name, result))
         summ = {k: result.get(k) for k in ("exit_code", "up", "ready", "started", "ok", "note")
                 if isinstance(result, dict) and k in result}
         ctx.log_tool_sync(run_id, name, args, summ or {"via": "prov"},
@@ -176,6 +199,25 @@ def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -
                     max_steps=budget.get("provisioner_max_steps", settings.provisioner_max_steps),
                     stop_tools={"mark_ready", "give_up"},
                     finalize_hint=finalize_hint, finalize_at=3,
-                    timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"))
+                    timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"),
+                    extend_when=lambda: any(recent), extend_factor=settings.provisioner_step_extension,
+                    extend_hard_cap=settings.provisioner_step_hard_cap)
     except Exception:
         pass
+
+
+def _build_progress(name: str, res) -> bool:
+    """A step counts as 'progress toward the app being up' if it did productive setup work
+    (installed/migrated/seeded, launched, or the port responded) rather than reading files or
+    banging the same failing command (the run_command circuit-breaker returns exit_code=-1)."""
+    if not isinstance(res, dict):
+        return False
+    if name == "check_ready":
+        return bool(res.get("up"))
+    if name == "start_app":
+        return bool(res.get("ready")) or bool(res.get("started"))
+    if name == "run_command":
+        return res.get("exit_code", -1) != -1
+    if name == "mark_ready":
+        return True
+    return False

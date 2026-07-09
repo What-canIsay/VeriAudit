@@ -155,6 +155,7 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `PROVISIONER_LLM_ENRICH` | `false` | （已被预热取代，保留仅作兼容/关闭用） |
 | `ENABLE_ADAPTIVE_BUDGET` | `true` | **规模自适应预算**（见下）。开启时下面各上限被当作**小项目的下限**，审计前由评估模块按项目规模/复杂度自动放大；设 `false` 则退回下面的固定值 |
 | `PROVISIONER_MAX_STEPS` / `PROVISIONER_TIMEOUT_SEC` | 16 / 900 | 搭建步数与总时长预算（自适应下限；防死循环/控 token） |
+| `PROVISIONER_STEP_EXTENSION` / `PROVISIONER_STEP_HARD_CAP` | 1.5 / 72 | **搭建/预热一次性续步**：接近成功（近几步在装依赖/迁移/启动/探活等有实质进展）却将耗尽步数时，把步数上限一次性放大 1.5x（不超过硬顶），防止"马上要搭起来却被步数截断"；卡死循环或只在读文件则不续。设 `EXTENSION=1` 关闭 |
 | `PROVISIONER_CMD_TIMEOUT_SEC` | `240` | 单条搭建命令超时（自适应下限；需构建的项目会自动放大） |
 | `ENABLE_SEMGREP` / `ENABLE_SECRET_SCAN` / `ENABLE_DEPENDENCY_SCAN` | `true` | 专业工具（Semgrep / Gitleaks / OSV）开关 |
 | `ENABLE_CODEQL` | `false` | CodeQL 语义分析扫描（重，深度档；需安装 codeql） |

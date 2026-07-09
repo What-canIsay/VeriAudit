@@ -101,6 +101,11 @@ class Settings(BaseSettings):
     provisioner_max_steps: int = 16       # LLM-driven setup step cap (anti-loop)
     provisioner_timeout_sec: int = 900    # whole provisioning wall-clock budget
     provisioner_cmd_timeout_sec: int = 240  # single setup command timeout
+    # one-time step EXTENSION when a build/preheat is clearly progressing (recent productive
+    # actions) and steps are about to run out — mirrors the Validator's extension, so a nearly-
+    # finished environment build isn't cut off right before it comes up.
+    provisioner_step_extension: float = 1.5
+    provisioner_step_hard_cap: int = 72   # absolute step ceiling after extension
     # When on, deep mode runs an extra LLM round to seed/migrate the DB EVEN IF the app
     # is already up — so DB-dependent vulns (SQLi etc.) can be dynamically reproduced.
     # Costs extra tokens per deep run; only fires when a DB-backed vuln candidate exists.
