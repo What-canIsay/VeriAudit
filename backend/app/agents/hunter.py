@@ -105,9 +105,11 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     attack_surface = ctx.state.get("attack_surface")
     guidance = ""
     if focus:
-        guidance += f"【编排官下发的审计重点，请优先据此开挖（但不局限于此）】{focus}\n"
+        guidance += (f"【编排官提示的可能高价值方向（仅供参考的线索，非任务范围限制）】{focus}\n"
+                     f"注意：这只是若干【可能】值得先看的方向，【绝不代表漏洞只在这些方向】。你仍必须对全项目做完整审计，"
+                     f"任何其它可疑点都要一并挖掘并 report_candidate——切勿只盯着上面几点而漏掉别处（宁多勿漏，漏报比误报更严重）。\n")
     if attack_surface:
-        guidance += f"【侦察员研判的攻击面】{attack_surface}\n"
+        guidance += f"【侦察员研判的攻击面（参考）】{attack_surface}\n"
     guidance += _rag_status_line(ctx)
     user = (f"项目语言分布：{langs}；已识别对外入口点 {len(eps)} 个。"
             f"部分入口文件：{top}。\n"
