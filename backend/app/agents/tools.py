@@ -89,6 +89,11 @@ TOOL_SCHEMAS: List[dict] = [
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
     {"type": "function", "function": {
+        "name": "search_code_semantic", "description": "语义/关键词混合检索【整项目代码】：用【自然语言描述你要找的东西】（如'把用户输入拼进 SQL 的地方'、'处理文件上传的函数'、'鉴权/会话校验中间件'、'反序列化不可信数据'、'命令拼接执行'），返回最相关的代码块（带 file:line 锚点、安全指示标签、片段）。在大项目里快速定位同类危险模式/净化函数/入口，比 grep 更懂语义。命中后务必 read_file 核实全文再判断。",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "自然语言描述要找的代码/模式"},
+            "k": {"type": "integer", "description": "返回条数，默认 8"}}, "required": ["query"]}}},
+    {"type": "function", "function": {
         "name": "search_vuln_kb", "description": "检索漏洞知识库（成因、利用手法、修复范式）。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
@@ -109,6 +114,7 @@ _SETTING_GATED = {
     "codeql_scan": "enable_codeql",
     "secret_scan": "enable_secret_scan",
     "dependency_scan": "enable_dependency_scan",
+    "search_code_semantic": "enable_rag",
 }
 
 
@@ -249,6 +255,12 @@ def dispatch(ctx, name: str, args: dict) -> dict:
                                           args["to_file"], int(args["to_line"]))
             return callgraph.call_path(root, args["from_file"], int(args["from_line"]),
                                        args["to_file"], int(args["to_line"]))
+        if name == "search_code_semantic":
+            from .. import rag
+            res = rag.search(root, args.get("query", ""), int(args.get("k", 0)) or None)
+            for r in res.get("results", []):   # trim previews for context economy
+                r["preview"] = "\n".join(r.get("preview", "").splitlines()[:18])
+            return res
         if name == "search_vuln_kb":
             return {"results": kb_lookup(args.get("query", ""), args.get("vuln_type", ""))}
         if name == "report_candidate":

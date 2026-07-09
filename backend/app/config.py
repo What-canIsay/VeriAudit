@@ -126,6 +126,23 @@ class Settings(BaseSettings):
     enable_dependency_scan: bool = True   # dependency_scan (osv-scanner)
     scanner_timeout_sec: int = 180
 
+    # --- RAG semantic code retrieval (app/rag/*) ---
+    # Builds a per-project vector index (incremental by file hash); the Hunter/Validator
+    # query it with natural language via search_code_semantic. Backend ladder:
+    #   auto      → fastembed (real semantic, offline ONNX) if installed, else hashing
+    #   fastembed → force the local ONNX semantic model (model cached on D:)
+    #   cloud     → the provider's embedding model via LiteLLM (needs API key; costs egress)
+    #   hashing   → deterministic offline lexical vectorizer (no semantics; always works)
+    enable_rag: bool = True
+    rag_embed_backend: str = "auto"
+    rag_embed_model: str = "BAAI/bge-small-en-v1.5"
+    rag_fastembed_cache: str = "D:/Tools/fastembed_cache"  # keep the model off C:
+    rag_hashing_dim: int = 512
+    rag_top_k: int = 8
+    rag_hybrid_alpha: float = 0.7         # weight of semantic vs lexical in hybrid rerank
+    rag_max_chunk_lines: int = 120
+    rag_chunk_overlap: int = 15
+
     @property
     def mock_mode(self) -> bool:
         return not bool(self.llm_api_key.strip())

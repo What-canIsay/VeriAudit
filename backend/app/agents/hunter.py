@@ -82,6 +82,17 @@ def _callgraph_status_line(ctx: AuditContext) -> str:
             "请直接用 read_file / search_code / check_reachability 判断可达性，不要依赖调用图。\n")
 
 
+def _rag_status_line(ctx: AuditContext) -> str:
+    rs = ctx.state.get("rag_status") or {}
+    if not rs.get("available"):
+        return ""
+    if rs.get("semantic"):
+        return (f"【语义检索就绪】已对全项目建立语义索引（{rs.get('chunks', '?')} 代码块，引擎 {rs.get('backend')}）。"
+                f"可用 search_code_semantic 以自然语言定位同类危险模式/净化函数/入口——在大项目里优先用它导航，再 read_file 定案。\n")
+    return ("【语义检索·降级】当前为词法(hashing)检索（非神经语义），search_code_semantic 仍可按关键词/子词找，"
+            "但召回弱于真语义，务必结合 search_code / read_file。\n")
+
+
 def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     profile = ctx.state.get("profile", {})
     eps = ctx.state.get("entrypoints", [])
@@ -94,6 +105,7 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
         guidance += f"【编排官下发的审计重点，请优先据此开挖（但不局限于此）】{focus}\n"
     if attack_surface:
         guidance += f"【侦察员研判的攻击面】{attack_surface}\n"
+    guidance += _rag_status_line(ctx)
     user = (f"项目语言分布：{langs}；已识别对外入口点 {len(eps)} 个。"
             f"部分入口文件：{top}。\n"
             + guidance

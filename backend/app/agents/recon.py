@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from .. import analysis, callgraph
+from .. import analysis, callgraph, rag
 from ..llm.gateway import llm
 from . import prompts
 from .context import AuditContext
@@ -36,6 +36,18 @@ async def run(ctx: AuditContext) -> dict:
         await ctx.degrade("调用图精度",
                           f"{cg['lang']} 项目本应命中 {cg['ideal'].upper()}，实际降级为 {cg['engine'].upper()}：{cg['reason']}",
                           "warn")
+
+    # build/refresh the semantic retrieval index (incremental) so the Hunter/Validator can
+    # search_code_semantic. Only when a real model drives them (mock mode won't call tools).
+    if rag.available() and llm.enabled:
+        await ctx.think(run_id, "构建/增量更新项目语义检索索引（供 search_code_semantic 用自然语言定位代码）。")
+        rstat = await asyncio.to_thread(rag.index, ctx.root)
+        await ctx.log_tool(run_id, "build_rag_index", {"backend": rstat.get("embedder")},
+                           {k: rstat.get(k) for k in ("chunks", "reindexed_files", "incremental")})
+        rs = await asyncio.to_thread(rag.status, ctx.root)
+        ctx.state["rag_status"] = rs
+        if rs.get("degraded"):
+            await ctx.degrade("语义检索", rs.get("reason") or "RAG 语义检索降级（回落词法）。", "warn")
 
     summary = None
     if llm.enabled:

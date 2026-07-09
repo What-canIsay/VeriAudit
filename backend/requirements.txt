@@ -11,3 +11,8 @@ bandit>=1.7
 # Multi-language call graph + cross-procedure reachability (app/callgraph.py).
 tree-sitter>=0.21
 tree-sitter-language-pack>=0.2
+# RAG semantic code retrieval (app/rag/*): numpy for the vector store (required).
+numpy>=1.24
+# fastembed = real OFFLINE semantic embeddings (ONNX, no torch); recommended. Without it,
+# RAG auto-falls back to the deterministic lexical `hashing` backend (no extra deps).
+fastembed>=0.3

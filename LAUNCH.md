@@ -162,6 +162,11 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` | 1400 / 300 | CodeQL 建库/查询的内存上限与超时 |
 | `ENABLE_JOERN_CALLGRAPH` | `true` | 阶梯第二级：Joern 多语言调用图(**已验证:PHP / Go / Python**;Java/JS 前端就绪)。**免构建**——含 Go 等编译型语言直接解析源码,无需编译。需 joern-cli + JDK17+(自动探测 `D:/Tools`);PHP/JS/Go 前端另需 `php`/`node`/`go` |
 | `JOERN_DIR` / `JOERN_JAVA_HOME` / `JOERN_TIMEOUT_SEC` | 自动 / 自动 / 420 | joern-cli 目录、JDK17+ 路径(留空自动探测 D:/Tools)、单步超时 |
+| `ENABLE_RAG` | `true` | **RAG 语义代码检索**：对全项目建向量索引(按文件 hash 增量)，猎手/验证官用 `search_code_semantic` 以【自然语言】定位同类危险模式/净化函数/入口(比 grep 更懂语义)。索引在侦察阶段构建(仅云端模型模式) |
+| `RAG_EMBED_BACKEND` | `auto` | 嵌入后端阶梯：`auto`=有 `fastembed` 走**真语义(离线 ONNX)**否则回落**词法 hashing**(确定性、无依赖、召回弱于真语义、会弹降级提示)；也可 `fastembed`/`cloud`(LiteLLM 云端嵌入，耗 egress)/`hashing` |
+| `RAG_EMBED_MODEL` / `RAG_FASTEMBED_CACHE` | `BAAI/bge-small-en-v1.5` / `D:/Tools/fastembed_cache` | fastembed 模型名(首次下载到 D 盘缓存，之后全离线)、模型缓存目录 |
+| `RAG_TOP_K` / `RAG_HYBRID_ALPHA` | 8 / 0.7 | 检索返回条数、语义 vs 词法在混合重排中的权重 |
+| `RAG_MAX_CHUNK_LINES` / `RAG_CHUNK_OVERLAP` / `RAG_HASHING_DIM` | 120 / 15 / 512 | 代码块最大行数(超出窗口切分)、窗口重叠、词法回落维度 |
 | `LLM_HUNT_STEPS` | `16` | LLM 主导挖掘的最大工具步数（自适应下限；控 token） |
 | `LLM_TRIAGE_LIMIT` | `16` | LLM 验证判定的候选上限（自适应下限；控 token） |
 | `ENABLE_AGENTIC_VERIFY` | `true` | **深度核验**：验证官自主读全上下文 + 在常驻应用上用专业工具实弹复现（仅 deep + 已搭建环境时可用） |
@@ -261,6 +266,7 @@ VeriAudit/
 │  │  ├─ llm/gateway.py      LiteLLM 网关（+ Mock 回落，含步数将尽的收尾提示）
 │  │  ├─ agents/             planner/recon/hunter/tracer/provisioner/validator/reporter
 │  │  │                       + tools（挖掘）/verify_tools（深度核验+动态复现）/provision_tools/prompts/context
+│  │  ├─ rag/                语义检索：splitter（代码分块）/embeddings（fastembed·云端·hashing）/indexer（增量向量索引）/retriever（混合重排）
 │  │  └─ api/routes.py       REST + SSE 路由
 │  └─ scripts/smoke.py       离线端到端冒烟测试
 └─ frontend/

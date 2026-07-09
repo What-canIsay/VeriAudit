@@ -69,6 +69,10 @@ TOOL_SCHEMAS: List[dict] = [
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
     {"type": "function", "function": {
+        "name": "search_code_semantic", "description": "语义/关键词混合检索整项目代码：用自然语言描述要找的东西（如'该 sink 的净化函数定义'、'同类危险调用的其它位置'、'鉴权中间件'），返回相关代码块(带 file:line)。用于核验时快速定位跨文件的净化/鉴权/同类点。命中后 read_file 核实。",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "k": {"type": "integer"}}, "required": ["query"]}}},
+    {"type": "function", "function": {
         "name": "search_vuln_kb", "description": "检索漏洞知识库（成因/利用手法/修复范式）。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
@@ -186,7 +190,7 @@ def _sql_log(env: dict, action: str, auth: str) -> dict:
 
 def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
     if name in ("list_files", "read_file", "search_code", "check_reachability", "search_vuln_kb",
-                "cg_overview", "cg_callers", "cg_callees", "cg_path",
+                "search_code_semantic", "cg_overview", "cg_callers", "cg_callees", "cg_path",
                 "cg_subgraph", "cg_dataflow"):
         return read_tools.dispatch(ctx, name, args)
 
