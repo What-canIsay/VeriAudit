@@ -14,15 +14,7 @@ async def run(ctx: AuditContext) -> dict:
     cands = ctx.state.get("candidates", [])
     entrypoints = ctx.state.get("entrypoints", [])
     reachable_n = 0
-
-    # call-graph precision: warn if we fell below the best achievable engine for this lang
-    cg = await asyncio.to_thread(callgraph.status, ctx.root)
-    await ctx.log_tool(run_id, "callgraph_engine", {"lang": cg["lang"]},
-                       {"engine": cg["engine"], "ideal": cg["ideal"]})
-    if cg["degraded"]:
-        await ctx.degrade("调用图精度",
-                          f"{cg['lang']} 项目本应命中 {cg['ideal'].upper()}，实际降级为 {cg['engine'].upper()}：{cg['reason']}",
-                          "warn")
+    # the call graph was built (and any degradation reported) in Recon; reuse the cache.
 
     for c in cands:
         # enrich taint source for candidates that lack one (e.g. LLM/scanner-reported),

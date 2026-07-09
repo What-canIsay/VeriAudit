@@ -70,6 +70,7 @@ class Graph:
         self.funcs: Dict[tuple, dict] = {}
         self.defs_by_name: Dict[str, List[tuple]] = {}
         self.edges: Dict[tuple, set] = {}          # caller_key -> {callee_key}
+        self.callsites: Dict[tuple, set] = {}      # (caller_key, callee_key) -> {call-site lines}
         self.redges: Dict[tuple, set] = {}         # callee_key -> {caller_key}
         self.roots: set = set()                    # funcs with no in-repo callers (external surface)
         self.spans_by_file: Dict[str, List[tuple]] = {}   # file -> [(start,end,key)]
@@ -96,13 +97,30 @@ class Graph:
             return min(cands, key=lambda sk: abs(sk[0] - line))[1]
 
         new_edges: Dict[tuple, set] = {}
-        for cf, cl, cn, ef, el, en in edge_tuples:
+        new_cs: Dict[tuple, set] = {}
+        for t in edge_tuples:
+            cf, cl, cn, ef, el, en = t[:6]
             a, b = resolve(cf, int(cl), cn), resolve(ef, int(el), en)
             if a and b and a != b:
                 new_edges.setdefault(a, set()).add(b)
+                if len(t) >= 7 and str(t[6]).lstrip("-").isdigit() and int(t[6]) > 0:
+                    new_cs.setdefault((a, b), set()).add(int(t[6]))   # call-site line
         self.edges = new_edges
+        self.callsites = new_cs
         self.engine = engine
         self._finalize()
+
+    def _callsite(self, a: tuple, b: tuple) -> Optional[int]:
+        s = self.callsites.get((a, b))
+        return min(s) if s else None
+
+    def _fanin(self, entry_keys, sink_key) -> int:
+        """How many distinct entry functions can reach the sink (multi-path signal)."""
+        n = 0
+        for k in list(entry_keys)[:30]:
+            if k == sink_key or self._fwd({k: 1}, sink_key):
+                n += 1
+        return n
 
     def enclosing(self, file: str, line: int) -> Optional[tuple]:
         best = None
@@ -157,7 +175,7 @@ class Graph:
         if entry_keys:
             path = self._fwd(entry_keys, sink_key)
             if path:
-                return self._hit(path, entry_keys[path[0]])
+                return self._hit(path, entry_keys[path[0]], self._fanin(entry_keys, sink_key))
         # 2) the sink function itself is an external root (directly invoked from outside)
         if sink_key in self.roots:
             return self._hit([sink_key], self._loc(sink_key))
@@ -171,13 +189,28 @@ class Graph:
         f = self.funcs.get(key, {})
         return {"file": key[0], "line": key[1], "function": f.get("name")}
 
-    def _hit(self, path_keys: List[tuple], entry_loc: dict) -> dict:
-        names = [self.funcs[k]["name"] for k in path_keys if k in self.funcs]
+    def _hit(self, path_keys: List[tuple], entry_loc: dict, fanin: int = 1) -> dict:
+        hops, parts = [], []
+        prev = None
+        for k in path_keys:
+            if k not in self.funcs:
+                continue
+            h = {"function": self.funcs[k]["name"], "file": k[0], "line": k[1]}
+            cs = self._callsite(prev, k) if prev else None
+            if cs:
+                h["called_at"] = f"{prev[0]}:{cs}"
+                parts.append(f"—(调用点 {prev[0]}:{cs})→")
+            elif prev:
+                parts.append("→")
+            parts.append(f"{h['function']}@{h['file']}:{h['line']}")
+            hops.append(h)
+            prev = k
+        note = "调用图确认可达：" + " ".join(parts)
+        if fanin > 1:
+            note += f"；另有共 {fanin} 个入口可达此点（此为最短其一，可能还有其它路径）"
         return {"reachable": True, "confidence": 0.88, "preconditions": [],
-                "entry_points": [entry_loc],
-                "path": [{"function": self.funcs[k]["name"], "file": k[0], "line": k[1]}
-                         for k in path_keys if k in self.funcs],
-                "note": f"调用图确认可达：{' → '.join(names)}", "engine": self.engine}
+                "entry_points": [entry_loc], "path": hops, "reachable_from_entries": fanin,
+                "note": note, "engine": self.engine}
 
     def callers_of(self, name: str) -> List[dict]:
         out = []
@@ -279,6 +312,7 @@ def _build_ts(root: Path) -> Optional[Graph]:
             for callee_key in g.defs_by_name.get(c["callee"], ()):  # type: ignore
                 if callee_key != caller_key:
                     g.edges.setdefault(caller_key, set()).add(callee_key)
+                    g.callsites.setdefault((caller_key, callee_key), set()).add(c["line"])
         g._finalize()
     except Exception:
         return None
@@ -451,7 +485,8 @@ def _joern_edges(root: Path, lang: str):
             '  c.callee.filterNot(_.isExternal).foreach { callee =>\n'
             '    println("EDGE\\t" + caller.filename + "\\t" + caller.lineNumber.getOrElse(-1) +'
             ' "\\t" + caller.name + "\\t" + callee.filename + "\\t" +'
-            ' callee.lineNumber.getOrElse(-1) + "\\t" + callee.name)\n'
+            ' callee.lineNumber.getOrElse(-1) + "\\t" + callee.name + "\\t" +'
+            ' c.lineNumber.getOrElse(-1))\n'
             '  }\n'
             '}\n', encoding="utf-8")
         r = subprocess.run(_joern_launch(joern, "joern") + ["--script", str(script)],
@@ -461,8 +496,9 @@ def _joern_edges(root: Path, lang: str):
             if line.startswith("EDGE\t"):
                 p = line.split("\t")
                 if len(p) >= 7 and not p[3].startswith("<") and not p[6].startswith("<"):
+                    call_line = p[7] if len(p) >= 8 else "-1"   # call-site line
                     rows.append((p[1].replace("\\", "/"), p[2], p[3],
-                                 p[4].replace("\\", "/"), p[5], p[6]))
+                                 p[4].replace("\\", "/"), p[5], p[6], call_line))
         return (rows, "joern") if rows else None
     except Exception:
         return None
@@ -476,7 +512,8 @@ def _parse_csv(text: str):
     rows = list(rd)
     for row in rows[1:]:   # skip header
         if len(row) >= 6:
-            out.append((row[0], row[1], row[2], row[3], row[4], row[5]))
+            call_line = row[6] if len(row) >= 7 else "-1"   # call-site line
+            out.append((row[0], row[1], row[2], row[3], row[4], row[5], call_line))
     return out
 
 
@@ -528,6 +565,101 @@ def who_calls(root: Path, symbol: str) -> dict:
     if g is None:
         return {"available": False}
     return {"available": True, "callers": g.callers_of(symbol)[:40]}
+
+
+# --------------------------------------------------------------------------- #
+# On-demand navigation API for the agents (bounded, anchored, engine-labelled).
+# Every result carries a note that the graph is STATIC (may miss edges) so the model
+# never treats it as an oracle — it navigates with the graph, confirms with the code.
+# --------------------------------------------------------------------------- #
+def _note(engine: str) -> str:
+    return (f"⚠️ 调用图由 {engine} 静态解析生成，可能漏动态派发/框架路由/回调；"
+            "结果不保证正确，『不可达/无调用者』也不代表安全——请务必 read_file 核实具体代码。")
+
+
+def _fmt(g: "Graph", k: tuple) -> str:
+    return f"{g.funcs.get(k, {}).get('name', '?')} @ {k[0]}:{k[1]}"
+
+
+def _resolve(g: "Graph", target: str) -> List[tuple]:
+    """Resolve a query target — 'file:line' (preferred, unambiguous) or a function name
+    (returns ALL same-named defs so the model disambiguates by location)."""
+    t = (target or "").strip().replace("\\", "/")
+    if ":" in t and t.rsplit(":", 1)[-1].strip().isdigit():
+        f, l = t.rsplit(":", 1)
+        k = g.enclosing(f.strip(), int(l.strip()))
+        return [k] if k else []
+    return list(g.defs_by_name.get(t, []))
+
+
+def overview(root: Path) -> dict:
+    g = get_graph(root)
+    if g is None:
+        return {"available": False, "note": "调用图不可用，请直接 read_file/search_code。"}
+    roots = sorted(g.roots)[:40]
+    note = _note(g.engine) + (
+        " 【攻击面已截断，仅列前 40】" if len(g.roots) > 40 else
+        " 【注意：'攻击面'=图中无内部调用者的函数，可能漏掉框架路由/动态注册的入口，未必完整】")
+    return {"available": True, "engine": g.engine, "language": g.lang,
+            "functions": len(g.funcs), "edges": sum(len(v) for v in g.edges.values()),
+            "attack_surface_total": len(g.roots),
+            "attack_surface": [_fmt(g, k) for k in roots],
+            "attack_surface_more": max(0, len(g.roots) - 40), "note": note}
+
+
+def neighbors(root: Path, target: str, direction: str) -> dict:
+    g = get_graph(root)
+    if g is None:
+        return {"available": False}
+    keys = _resolve(g, target)
+    if not keys:
+        return {"available": True, "found": False,
+                "note": "未在调用图中找到该函数（可能是顶层脚本代码、外部库符号、或名称不符）；"
+                        "请改用 file:line，或先 read_file 确认函数名后再查。"}
+    out = []
+    for k in keys:
+        if direction == "callees":
+            for n in g.edges.get(k, ()):
+                cs = g._callsite(k, n)
+                out.append(_fmt(g, n) + (f"（调用点 {k[0]}:{cs}）" if cs else "（调用点未知）"))
+        else:
+            for n in g.redges.get(k, ()):
+                cs = g._callsite(n, k)
+                out.append(_fmt(g, n) + (f"（在 {n[0]}:{cs} 处调用）" if cs else "（调用点未知）"))
+    out = sorted(set(out))
+    note = _note(g.engine) + (
+        f" 【已截断：仅显示前 40/共 {len(out)} 条；如需更多请对具体函数再查或 read_file】"
+        if len(out) > 40 else " 【注意：图可能缺边，本清单未必完整，勿据此认定'没有更多'】")
+    return {"available": True, "found": True, "target": [_fmt(g, k) for k in keys],
+            direction: out[:40], "shown": min(40, len(out)), "total": len(out),
+            "engine": g.engine, "note": note}
+
+
+def reachable_query(root: Path, file: str, line: int, entrypoints: List[dict]) -> dict:
+    g = get_graph(root)
+    if g is None:
+        return {"available": False}
+    try:
+        r = g.reachable(file.replace("\\", "/"), int(line), entrypoints or [])
+    except Exception:
+        r = None
+    if r:
+        hops = r.get("path", [])
+        chain = " ".join(
+            ((f"—(调用点 {h['called_at']})→ " if h.get("called_at") else ("→ " if i else ""))
+             + f"{h.get('function', '?')}@{h.get('file')}:{h.get('line')}")
+            for i, h in enumerate(hops))
+        fanin = r.get("reachable_from_entries", 1)
+        note = _note(g.engine)
+        if fanin > 1:
+            note += f" 【此为最短路径其一，共 {fanin} 个入口可达此点，可能还有其它路径】"
+        return {"available": True, "reachable": "yes", "chain": chain,
+                "reachable_from_entries": fanin, "entry": r.get("entry_points"),
+                "engine": g.engine, "note": note}
+    return {"available": True, "reachable": "unconfirmed",
+            "detail": "调用图未发现从对外入口到此处的调用链——可能是顶层脚本/动态派发/框架路由，"
+                      "【不代表不可达，也不代表安全】，请照常 read_file 核实并按需 report_candidate。",
+            "engine": g.engine, "note": _note(g.engine)}
 
 
 # --------------------------------------------------------------------------- #

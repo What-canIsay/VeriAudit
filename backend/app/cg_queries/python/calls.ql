@@ -14,4 +14,5 @@ select caller.getLocation().getFile().getRelativePath() as callerFile,
        caller.getName() as callerName,
        callee.getLocation().getFile().getRelativePath() as calleeFile,
        callee.getLocation().getStartLine() as calleeLine,
-       callee.getName() as calleeName
+       callee.getName() as calleeName,
+       call.getLocation().getStartLine() as callSiteLine

@@ -62,6 +62,26 @@ async def run(ctx: AuditContext) -> dict:
     return out
 
 
+_CG_ENGINE_DESC = {
+    "codeql": "CodeQL（语义级数据流，精度最高）",
+    "joern": "Joern（CPG 跨过程，精度高、多语言）",
+    "treesitter": "Tree-sitter（按函数名解析，精度有限、可能有较多假边——尤其要 read_file 核实）",
+}
+
+
+def _callgraph_status_line(ctx: AuditContext) -> str:
+    """Tell the Hunter whether the call graph built and, if so, WHICH engine — so it
+    calibrates how much to trust cg_* results."""
+    cg = ctx.state.get("callgraph_status") or {}
+    eng = cg.get("engine")
+    if eng in _CG_ENGINE_DESC:
+        return (f"【调用图状态】构建成功，绘图引擎 = {_CG_ENGINE_DESC[eng]}。"
+                f"可用 cg_overview / cg_callers / cg_callees / cg_reachable / cg_path 查询；"
+                f"但图不保证正确，任何结论务必 read_file 核实，且『不可达』不代表安全。\n")
+    return ("【调用图状态】构建失败 / 不可用：cg_* 工具会返回 unavailable，"
+            "请直接用 read_file / search_code / analyze_dataflow 判断可达性，不要依赖调用图。\n")
+
+
 def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     profile = ctx.state.get("profile", {})
     eps = ctx.state.get("entrypoints", [])
@@ -69,6 +89,7 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     top = sorted({loc for e in eps for loc in [e["location"]["file"]]})[:12]
     user = (f"项目语言分布：{langs}；已识别对外入口点 {len(eps)} 个。"
             f"部分入口文件：{top}。\n"
+            + _callgraph_status_line(ctx) +
             f"请以资深审计员的方式自主审计本项目，发现真实安全漏洞，并对每个可疑点调用 report_candidate 登记。"
             f"你可自由决定调用哪些工具、以什么顺序进行。")
 

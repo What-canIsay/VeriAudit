@@ -59,14 +59,24 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
-        "name": "call_path", "description": "在跨过程调用图上查两处代码之间的函数调用链（如 入口点→sink），用于确认可达性并构造精确利用路径。",
+        "name": "cg_overview", "description": "查看审计前已构建的【整项目调用图】概览：引擎、函数/边数、对外入口函数（攻击面）。开挖前先摸清结构。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "cg_callers", "description": "在调用图上查【谁调用了】目标函数（反向）。target 用 'file:line'（唯一无歧义，推荐）或函数名（同名会全部列出）。",
+        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "cg_callees", "description": "在调用图上查目标函数【调用了谁】（正向）。target 同 cg_callers。",
+        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "cg_reachable", "description": "判断某危险汇聚点 (file,line) 是否能从对外入口经调用链到达，并返回 入口→sink 链。用于降误报、定位真正可打的点。",
+        "parameters": {"type": "object", "properties": {
+            "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
+    {"type": "function", "function": {
+        "name": "cg_path", "description": "在调用图上查两处代码之间的函数调用链（如 入口→sink）。",
         "parameters": {"type": "object", "properties": {
             "from_file": {"type": "string"}, "from_line": {"type": "integer"},
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
-    {"type": "function", "function": {
-        "name": "who_calls", "description": "在调用图上查有哪些函数调用了给定函数名（反向调用者），用于回溯到对外入口。",
-        "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
     {"type": "function", "function": {
         "name": "search_vuln_kb", "description": "检索漏洞知识库（成因、利用手法、修复范式）。",
         "parameters": {"type": "object", "properties": {
@@ -186,13 +196,19 @@ def dispatch(ctx, name: str, args: dict) -> dict:
             reach = analysis.reachability_check(root, cand, eps)
             return {"taint_path": taint["taint_path"], "has_source": taint["has_source"],
                     "reachability": reach}
-        if name == "call_path":
+        if name in ("cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path"):
             from .. import callgraph
+            if name == "cg_overview":
+                return callgraph.overview(root)
+            if name == "cg_callers":
+                return callgraph.neighbors(root, args.get("target", ""), "callers")
+            if name == "cg_callees":
+                return callgraph.neighbors(root, args.get("target", ""), "callees")
+            if name == "cg_reachable":
+                return callgraph.reachable_query(root, args.get("file", ""), int(args.get("line", 0)),
+                                                 ctx.state.get("entrypoints", []))
             return callgraph.call_path(root, args["from_file"], int(args["from_line"]),
                                        args["to_file"], int(args["to_line"]))
-        if name == "who_calls":
-            from .. import callgraph
-            return callgraph.who_calls(root, args.get("symbol", ""))
         if name == "search_vuln_kb":
             return {"results": kb_lookup(args.get("query", ""), args.get("vuln_type", ""))}
         if name == "report_candidate":

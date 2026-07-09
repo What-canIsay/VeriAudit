@@ -44,14 +44,24 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
-        "name": "call_path", "description": "在跨过程调用图上查两处代码之间的函数调用链（入口→sink），用于确认可达性、构造精确 PoC。",
+        "name": "cg_overview", "description": "查看整项目调用图概览（引擎、函数/边数、对外入口函数）。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "cg_callers", "description": "查谁调用了目标函数（反向）。target 用 'file:line'（推荐）或函数名。",
+        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "cg_callees", "description": "查目标函数调用了谁（正向）。",
+        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+    {"type": "function", "function": {
+        "name": "cg_reachable", "description": "判断 (file,line) 是否能从对外入口经调用链到达，并返回 入口→sink 链，用于确认可达性、构造精确 PoC。",
+        "parameters": {"type": "object", "properties": {
+            "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
+    {"type": "function", "function": {
+        "name": "cg_path", "description": "查两处代码之间的函数调用链（入口→sink）。",
         "parameters": {"type": "object", "properties": {
             "from_file": {"type": "string"}, "from_line": {"type": "integer"},
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
-    {"type": "function", "function": {
-        "name": "who_calls", "description": "查有哪些函数调用了给定函数名（反向调用者），用于回溯到对外入口。",
-        "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
     {"type": "function", "function": {
         "name": "search_vuln_kb", "description": "检索漏洞知识库（成因/利用手法/修复范式）。",
         "parameters": {"type": "object", "properties": {
@@ -163,7 +173,7 @@ def _sql_log(env: dict, action: str, auth: str) -> dict:
 
 def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
     if name in ("list_files", "read_file", "search_code", "analyze_dataflow", "search_vuln_kb",
-                "call_path", "who_calls"):
+                "cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path"):
         return read_tools.dispatch(ctx, name, args)
 
     if name == "http_probe":

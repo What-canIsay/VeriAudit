@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from .. import analysis
+from .. import analysis, callgraph
 from ..llm.gateway import llm
 from . import prompts
 from .context import AuditContext
@@ -23,6 +23,19 @@ async def run(ctx: AuditContext) -> dict:
 
     ctx.state["profile"] = profile
     ctx.state["entrypoints"] = entrypoints
+
+    # pre-build the whole-project cross-procedure call graph so the Hunter can query it
+    # on demand (cached; reused by Tracer/Validator). Warn early if it degraded.
+    await ctx.think(run_id, "构建整项目跨过程调用图（供漏洞猎手按需查询：cg_overview/cg_callers/cg_reachable…）。")
+    cg = await asyncio.to_thread(callgraph.status, ctx.root)
+    await ctx.log_tool(run_id, "build_callgraph", {"lang": cg["lang"]},
+                       {"engine": cg["engine"], "ideal": cg["ideal"]})
+    ctx.state["callgraph_engine"] = cg["engine"]
+    ctx.state["callgraph_status"] = cg
+    if cg["degraded"]:
+        await ctx.degrade("调用图精度",
+                          f"{cg['lang']} 项目本应命中 {cg['ideal'].upper()}，实际降级为 {cg['engine'].upper()}：{cg['reason']}",
+                          "warn")
 
     summary = None
     if llm.enabled:
