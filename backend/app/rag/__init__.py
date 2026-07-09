@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..config import settings
-from .embeddings import get_embedder, is_semantic
+from . import kb
+from .embeddings import is_semantic, shared_embedder
 from .indexer import Index
 from .retriever import search as _search
 
@@ -29,7 +30,7 @@ def available() -> bool:
 
 
 def _embedder():
-    return get_embedder(getattr(settings, "rag_embed_backend", "auto"))
+    return shared_embedder(getattr(settings, "rag_embed_backend", "auto"))
 
 
 def _get_index(root: Path, build: bool = True, progress: Optional[Callable] = None) -> Optional[Index]:
@@ -55,15 +56,28 @@ def index(root: Path, force: bool = False, progress: Optional[Callable] = None) 
     key = str(root)
     if force:
         _CACHE.pop(key, None)
+    # Build with the configured embedder. If it fails (e.g. fastembed/ONNX OOM under a
+    # memory-heavy deep run), fall back to the dependency-free offline hashing backend so
+    # RAG stays available (degraded to lexical) and the AUDIT NEVER FAILS on an enhancement.
+    fell_back = ""
     try:
         idx = Index(Path(root), _embedder())
+        stats = idx.build_or_update(progress=progress)
     except Exception as e:
         _EMBED_ERR[key] = str(e)[:200]
-        return {"available": False, "reason": f"嵌入后端加载失败：{str(e)[:150]}"}
-    stats = idx.build_or_update(progress=progress)
+        try:
+            idx = Index(Path(root), get_embedder("hashing"))
+            stats = idx.build_or_update(progress=progress)
+            fell_back = f"语义嵌入失败（{str(e)[:90]}）→ 回落词法 hashing 检索"
+        except Exception as e2:
+            _CACHE.pop(key, None)
+            _EMBED_ERR[key] = str(e2)[:200]
+            return {"available": False, "reason": f"RAG 建索引失败：{str(e2)[:150]}"}
     _CACHE[key] = idx
     stats["available"] = True
     stats["semantic"] = is_semantic(idx.embedder)
+    if fell_back:
+        stats["fell_back"] = fell_back
     return stats
 
 
@@ -92,12 +106,15 @@ def status(root: Path) -> dict:
     if not available():
         return {"available": False, "backend": None, "semantic": False,
                 "degraded": True, "reason": "ENABLE_RAG=false（已关闭语义检索）", "chunks": 0}
-    try:
-        emb = _embedder()
-    except Exception as e:
-        return {"available": False, "backend": None, "semantic": False, "degraded": True,
-                "reason": f"嵌入后端加载失败：{str(e)[:150]}", "chunks": 0}
     idx = _CACHE.get(str(root))
+    if idx is not None:
+        emb = idx.embedder                 # reflect what ACTUALLY built the index (incl. fallback)
+    else:
+        try:
+            emb = _embedder()
+        except Exception as e:
+            return {"available": False, "backend": None, "semantic": False, "degraded": True,
+                    "reason": f"嵌入后端加载失败：{str(e)[:150]}", "chunks": 0}
     chunks = len(idx.chunks) if idx is not None else 0
     semantic = is_semantic(emb)
     return {"available": True, "backend": emb.name, "semantic": semantic,

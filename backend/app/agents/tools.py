@@ -89,12 +89,21 @@ TOOL_SCHEMAS: List[dict] = [
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
     {"type": "function", "function": {
-        "name": "search_code_semantic", "description": "语义/关键词混合检索【整项目代码】：用【自然语言描述你要找的东西】（如'把用户输入拼进 SQL 的地方'、'处理文件上传的函数'、'鉴权/会话校验中间件'、'反序列化不可信数据'、'命令拼接执行'），返回最相关的代码块（带 file:line 锚点、安全指示标签、片段）。在大项目里快速定位同类危险模式/净化函数/入口，比 grep 更懂语义。命中后务必 read_file 核实全文再判断。",
+        "name": "search_code_semantic", "description": (
+            "语义/关键词混合检索【整项目代码】。\n"
+            "· 作用：用【自然语言描述你要找的东西】（如'把用户输入拼进 SQL 的地方'、'处理文件上传的函数'、"
+            "'鉴权/会话校验中间件'、'反序列化不可信数据'），按【含义】召回相关代码块（带 file:line 锚点、安全指示标签、片段）。"
+            "适合你【叫不出确切符号名】、要在大项目里按语义找【一类】危险模式/净化函数/入口——这是它相对 grep 的独特价值。\n"
+            "· 性价比：离线嵌入、一次检索快而便宜；适合做【发现/导航】的第一步。\n"
+            "· 局限（务必知晓）：① 基于代码块相似度，【可能召回不相关、也可能漏掉相关】（尤其嵌入降级为词法 hashing 时）；"
+            "② 结果只说明【该去看哪里】，命中≠有漏洞、没召回≠安全；③ 索引是快照，以文件真实内容为准。\n"
+            "· 【铁律】它只是线索，【绝不能作为判定依据】——任何登记(report_candidate)前，必须对确切代码 read_file 精确阅读来定案，防止误报。\n"
+            "· 已知确切符号/字符串/正则时，改用 search_code(grep) 更直接。"),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "自然语言描述要找的代码/模式"},
             "k": {"type": "integer", "description": "返回条数，默认 8"}}, "required": ["query"]}}},
     {"type": "function", "function": {
-        "name": "search_vuln_kb", "description": "检索漏洞知识库（成因、利用手法、修复范式）。",
+        "name": "search_vuln_kb", "description": "检索内置【漏洞知识库】（成因/利用手法/修复范式/PoC 提示），【语义+关键词混合】匹配——按含义也能命中（如问'如何修复把用户数据传进 shell 的问题'可匹配命令注入）。这是【通用漏洞知识，不是本项目代码】；找项目代码用 search_code / search_code_semantic。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
     {"type": "function", "function": {
@@ -262,7 +271,8 @@ def dispatch(ctx, name: str, args: dict) -> dict:
                 r["preview"] = "\n".join(r.get("preview", "").splitlines()[:18])
             return res
         if name == "search_vuln_kb":
-            return {"results": kb_lookup(args.get("query", ""), args.get("vuln_type", ""))}
+            from ..rag import kb as rag_kb   # semantic+keyword hybrid; keyword-only if RAG off
+            return rag_kb.search(args.get("query", ""), args.get("vuln_type", ""))
         if name == "report_candidate":
             return _record(ctx, args)
         return {"error": f"unknown tool {name}"}

@@ -69,11 +69,16 @@ TOOL_SCHEMAS: List[dict] = [
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
     {"type": "function", "function": {
-        "name": "search_code_semantic", "description": "语义/关键词混合检索整项目代码：用自然语言描述要找的东西（如'该 sink 的净化函数定义'、'同类危险调用的其它位置'、'鉴权中间件'），返回相关代码块(带 file:line)。用于核验时快速定位跨文件的净化/鉴权/同类点。命中后 read_file 核实。",
+        "name": "search_code_semantic", "description": (
+            "语义/关键词混合检索整项目代码，用自然语言按【含义】定位跨文件上下文（如'该 sink 的净化函数定义'、"
+            "'同类危险调用的其它位置'、'校验此会话/权限的中间件'、'该输入的其它使用点'）。核验时用它省去逐个 grep 猜函数名。\n"
+            "· 局限：命中≠有漏洞、没召回≠安全；嵌入降级为词法时召回更弱。\n"
+            "· 【铁律·防误报】它只是定位线索，【最终 conclude 的判定必须基于 read_file 对确切代码 + 运行时证据】，"
+            "绝不能仅凭语义检索命中或未命中下结论。已知确切符号时用 search_code。"),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "k": {"type": "integer"}}, "required": ["query"]}}},
     {"type": "function", "function": {
-        "name": "search_vuln_kb", "description": "检索漏洞知识库（成因/利用手法/修复范式）。",
+        "name": "search_vuln_kb", "description": "检索内置【漏洞知识库】（成因/利用手法/修复范式/PoC 提示），【语义+关键词混合】匹配。这是通用漏洞知识，非本项目代码；找项目代码用 search_code / search_code_semantic。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "vuln_type": {"type": "string"}}, "required": []}}},
     {"type": "function", "function": {
@@ -123,6 +128,25 @@ _PREHEAT_READY = {"type": "function", "function": {
 
 PREHEAT_SCHEMAS: List[dict] = [t for t in TOOL_SCHEMAS
                               if t["function"]["name"] != "conclude"] + [_PREHEAT_READY]
+
+# tools disabled wholesale when their subsystem is off (ENABLE_RAG). search_vuln_kb stays
+# (it degrades to keyword-only internally); only the code semantic search is hidden.
+_RAG_GATED = {"search_code_semantic"}
+
+
+def _gate(schemas: List[dict]) -> List[dict]:
+    if getattr(settings, "enable_rag", True):
+        return schemas
+    return [t for t in schemas if t["function"]["name"] not in _RAG_GATED]
+
+
+def active_schemas() -> List[dict]:
+    """Validator toolset with RAG-gated tools removed when ENABLE_RAG=false."""
+    return _gate(TOOL_SCHEMAS)
+
+
+def active_preheat_schemas() -> List[dict]:
+    return _gate(PREHEAT_SCHEMAS)
 
 
 def _b64(s: str) -> str:

@@ -102,13 +102,19 @@ class FastEmbedEmbedder:
         n[n == 0] = 1.0
         return (a / n).astype(np.float32)
 
+    # bge truncates to ~512 tokens anyway; cap chars first so a pathological single long
+    # line (minified JS / base64 / data blob) can't blow up tokenization/memory.
+    _MAX_CHARS = 6000
+
     def embed(self, texts: List[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
-        arr = np.asarray(list(self._model.embed(texts)), dtype=np.float32)
+        clipped = [t[:self._MAX_CHARS] for t in texts]
+        arr = np.asarray(list(self._model.embed(clipped)), dtype=np.float32)
         return self._norm(arr)
 
     def embed_query(self, text: str) -> np.ndarray:
+        text = text[:self._MAX_CHARS]
         try:
             q = next(iter(self._model.query_embed([text])))
         except Exception:
@@ -182,6 +188,20 @@ def get_embedder(backend: Optional[str] = None) -> object:
         return _fastembed()
     except Exception:
         return HashingEmbedder(dim)
+
+
+_SHARED: dict = {}
+
+
+def shared_embedder(backend: Optional[str] = None):
+    """Process-cached embedder keyed by backend, so the code index and the KB index reuse
+    ONE loaded model instead of loading fastembed twice. Only successful loads are cached."""
+    b = (backend or _cfg("rag_embed_backend", "auto")).lower()
+    emb = _SHARED.get(b)
+    if emb is None:
+        emb = get_embedder(b)
+        _SHARED[b] = emb
+    return emb
 
 
 def is_semantic(embedder) -> bool:

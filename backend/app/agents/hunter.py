@@ -83,14 +83,17 @@ def _callgraph_status_line(ctx: AuditContext) -> str:
 
 
 def _rag_status_line(ctx: AuditContext) -> str:
+    """Neutral readiness/degradation note only — WHEN/HOW to use semantic search (and its
+    limits) lives in the search_code_semantic tool description + the prompt's tool-selection
+    policy, so the model decides for itself rather than being nudged to over-rely on it."""
     rs = ctx.state.get("rag_status") or {}
     if not rs.get("available"):
         return ""
     if rs.get("semantic"):
-        return (f"【语义检索就绪】已对全项目建立语义索引（{rs.get('chunks', '?')} 代码块，引擎 {rs.get('backend')}）。"
-                f"可用 search_code_semantic 以自然语言定位同类危险模式/净化函数/入口——在大项目里优先用它导航，再 read_file 定案。\n")
-    return ("【语义检索·降级】当前为词法(hashing)检索（非神经语义），search_code_semantic 仍可按关键词/子词找，"
-            "但召回弱于真语义，务必结合 search_code / read_file。\n")
+        return (f"【语义检索可用】search_code_semantic 已就绪（{rs.get('chunks', '?')} 代码块，引擎 {rs.get('backend')}）——"
+                f"其用途/局限/与 grep 的取舍见该工具说明；命中仅作线索，定案以 read_file 为准。\n")
+    return ("【语义检索·降级】search_code_semantic 当前为词法(hashing)而非神经语义，召回弱于真语义——"
+            "按需使用并务必结合 search_code / read_file 核实。\n")
 
 
 def _llm_hunt(ctx: AuditContext, run_id: str) -> None:

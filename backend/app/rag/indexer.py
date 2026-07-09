@@ -82,7 +82,8 @@ class Index:
         (self.dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
     # ---- build / incremental update --------------------------------------- #
-    def build_or_update(self, batch: int = 64, progress: Optional[Callable] = None) -> dict:
+    def build_or_update(self, batch: Optional[int] = None, progress: Optional[Callable] = None) -> dict:
+        batch = int(batch or getattr(settings, "rag_embed_batch", 16))
         loaded = self.load()
         old_files = set(self.files)
         seen: set = set()

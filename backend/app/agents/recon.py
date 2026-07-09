@@ -39,15 +39,22 @@ async def run(ctx: AuditContext) -> dict:
 
     # build/refresh the semantic retrieval index (incremental) so the Hunter/Validator can
     # search_code_semantic. Only when a real model drives them (mock mode won't call tools).
+    # RAG is an ENHANCEMENT — any failure here must NEVER fail the audit (defensive wrap).
     if rag.available() and llm.enabled:
-        await ctx.think(run_id, "构建/增量更新项目语义检索索引（供 search_code_semantic 用自然语言定位代码）。")
-        rstat = await asyncio.to_thread(rag.index, ctx.root)
-        await ctx.log_tool(run_id, "build_rag_index", {"backend": rstat.get("embedder")},
-                           {k: rstat.get(k) for k in ("chunks", "reindexed_files", "incremental")})
-        rs = await asyncio.to_thread(rag.status, ctx.root)
-        ctx.state["rag_status"] = rs
-        if rs.get("degraded"):
-            await ctx.degrade("语义检索", rs.get("reason") or "RAG 语义检索降级（回落词法）。", "warn")
+        try:
+            await ctx.think(run_id, "构建/增量更新项目语义检索索引（供 search_code_semantic 用自然语言定位代码）。")
+            rstat = await asyncio.to_thread(rag.index, ctx.root)
+            await ctx.log_tool(run_id, "build_rag_index", {"backend": rstat.get("embedder")},
+                               {k: rstat.get(k) for k in ("chunks", "reindexed_files", "incremental")})
+            rs = await asyncio.to_thread(rag.status, ctx.root)
+            ctx.state["rag_status"] = rs
+            if rstat.get("fell_back"):
+                await ctx.degrade("语义检索", rstat["fell_back"] + "（不影响其余审计能力）。", "warn")
+            elif rs.get("degraded"):
+                await ctx.degrade("语义检索", rs.get("reason") or "RAG 语义检索降级（回落词法）。", "warn")
+        except Exception as e:                     # RAG must not fail the audit
+            ctx.state["rag_status"] = {"available": False}
+            await ctx.degrade("语义检索", f"语义检索初始化失败，已跳过（不影响其余审计）：{str(e)[:120]}", "warn")
 
     summary = None
     if llm.enabled:

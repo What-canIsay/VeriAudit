@@ -162,7 +162,7 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` | 1400 / 300 | CodeQL 建库/查询的内存上限与超时 |
 | `ENABLE_JOERN_CALLGRAPH` | `true` | 阶梯第二级：Joern 多语言调用图(**已验证:PHP / Go / Python**;Java/JS 前端就绪)。**免构建**——含 Go 等编译型语言直接解析源码,无需编译。需 joern-cli + JDK17+(自动探测 `D:/Tools`);PHP/JS/Go 前端另需 `php`/`node`/`go` |
 | `JOERN_DIR` / `JOERN_JAVA_HOME` / `JOERN_TIMEOUT_SEC` | 自动 / 自动 / 420 | joern-cli 目录、JDK17+ 路径(留空自动探测 D:/Tools)、单步超时 |
-| `ENABLE_RAG` | `true` | **RAG 语义代码检索**：对全项目建向量索引(按文件 hash 增量)，猎手/验证官用 `search_code_semantic` 以【自然语言】定位同类危险模式/净化函数/入口(比 grep 更懂语义)。索引在侦察阶段构建(仅云端模型模式) |
+| `ENABLE_RAG` | `true` | **RAG 语义检索总开关**（作"发现/导航"，定案仍以 `read_file` 精确阅读为准，防误报）。用于两处：① `search_code_semantic` 对全项目代码建向量索引(按文件 hash 增量)、以自然语言定位同类危险模式/净化/入口(索引在侦察阶段建，仅云端模型模式)；② `search_vuln_kb` 对漏洞知识库做**语义+关键词混合**检索。设 `false`=**全面关闭**：语义代码检索工具在猎手/验证官/预热处均隐藏、不建索引、知识库回落纯关键词 |
 | `RAG_EMBED_BACKEND` | `auto` | 嵌入后端阶梯：`auto`=有 `fastembed` 走**真语义(离线 ONNX)**否则回落**词法 hashing**(确定性、无依赖、召回弱于真语义、会弹降级提示)；也可 `fastembed`/`cloud`(LiteLLM 云端嵌入，耗 egress)/`hashing` |
 | `RAG_EMBED_MODEL` / `RAG_FASTEMBED_CACHE` | `BAAI/bge-small-en-v1.5` / `D:/Tools/fastembed_cache` | fastembed 模型名(首次下载到 D 盘缓存，之后全离线)、模型缓存目录 |
 | `RAG_TOP_K` / `RAG_HYBRID_ALPHA` | 8 / 0.7 | 检索返回条数、语义 vs 词法在混合重排中的权重 |

@@ -138,6 +138,11 @@ class Settings(BaseSettings):
     rag_embed_model: str = "BAAI/bge-small-en-v1.5"
     rag_fastembed_cache: str = "D:/Tools/fastembed_cache"  # keep the model off C:
     rag_hashing_dim: int = 512
+    # embedding batch size. ONNX attention peak ≈ batch × layers × seq² × 4B (bge-small:
+    # batch×12×512²×4). A deep run already spends ~1.4GB on CodeQL + Joern + Docker, so keep
+    # this small: 8 ≈ 100MB. If fastembed still can't get the memory it OOM-degrades to the
+    # dependency-free `hashing` backend (audit never fails).
+    rag_embed_batch: int = 8
     rag_top_k: int = 8
     rag_hybrid_alpha: float = 0.7         # weight of semantic vs lexical in hybrid rerank
     rag_max_chunk_lines: int = 120

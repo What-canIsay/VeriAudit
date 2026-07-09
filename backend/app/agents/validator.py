@@ -275,7 +275,7 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
 
     finalize_hint = "步数即将用尽，请立即基于现有证据调用 conclude 给出结论（verdict / reproduced / 精确 PoC）。"
     await asyncio.to_thread(lambda: llm.agentic(
-        "validator", prompts.VALIDATOR_AGENTIC, user, verify_tools.TOOL_SCHEMAS,
+        "validator", prompts.VALIDATOR_AGENTIC, user, verify_tools.active_schemas(),
         lambda n, a: verify_tools.dispatch(env, ctx, n, a, sink),
         on_tool=on_tool, on_step=on_step, max_steps=steps, stop_tools={"conclude"},
         finalize_hint=finalize_hint, finalize_at=2,

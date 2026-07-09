@@ -126,7 +126,7 @@ def _preheat(ctx: AuditContext, run_id, env: dict) -> None:
 
     finalize_hint = "预算即将用尽，请立即 preheat_ready 登记已完成的准备（若本项目无需准备也调用并说明）。"
     try:
-        llm.agentic("provisioner", prompts.PREHEAT, user, verify_tools.PREHEAT_SCHEMAS, dispatch,
+        llm.agentic("provisioner", prompts.PREHEAT, user, verify_tools.active_preheat_schemas(), dispatch,
                     on_tool=on_tool, on_step=on_step,
                     max_steps=budget.get("preheat_max_steps", settings.preheat_max_steps),
                     stop_tools={"preheat_ready"}, finalize_hint=finalize_hint, finalize_at=2,
