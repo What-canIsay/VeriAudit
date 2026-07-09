@@ -100,7 +100,8 @@ class LLMGateway:
                 num_retries: Optional[int] = None,
                 extend_when: Optional[Callable[[], bool]] = None,
                 extend_factor: float = 1.0,
-                extend_hard_cap: int = 0) -> Tuple[Optional[str], List[dict]]:
+                extend_hard_cap: int = 0,
+                checkpoint: Optional[Callable[[], bool]] = None) -> Tuple[Optional[str], List[dict]]:
         """Bounded tool-calling loop where the MODEL drives tool use.
 
         on_step(reasoning, content, tool_names) fires once per model turn so the UI
@@ -125,6 +126,9 @@ class LLMGateway:
         cap = max_steps
         i = 0
         while i < cap:
+            # cooperative pause/cancel: blocks while paused, stops the loop on cancel.
+            if checkpoint is not None and not checkpoint():
+                return None, trace
             msg = self._call(role, messages, tools=tools, timeout=timeout, num_retries=num_retries)
             if msg is None:
                 break

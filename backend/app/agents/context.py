@@ -22,6 +22,9 @@ class AuditContext:
             "rejected": [], "notes": [],
         }
         self.current_agent = "system"
+        # cooperative pause/cancel control; run_audit swaps in the task-registered one.
+        from ..control import Control
+        self.control = Control()
 
     async def emit(self, event: str, data: dict) -> None:
         await bus_emit(self.task_id, event, data)

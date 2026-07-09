@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from .. import events, orchestrator, report as report_mod, workspace
+from .. import control, events, orchestrator, report as report_mod, workspace
 from ..analysis import detect_stack
 from ..config import settings
 from ..db import get_db
@@ -149,6 +149,52 @@ def get_task(tid: str, db: Session = Depends(get_db)):
     if not t:
         raise HTTPException(404, "task not found")
     return task_out(t)
+
+
+# ---- run control: pause / resume / cancel (cooperative; takes effect at the next
+#      phase boundary or model turn — can't hard-kill a thread mid-LLM-call) ---- #
+async def _control_action(tid: str, action: str, db: Session) -> dict:
+    t = db.get(AuditTask, tid)
+    if not t:
+        raise HTTPException(404, "task not found")
+    c = control.get(tid)
+    if c is None:
+        raise HTTPException(409, "任务未在运行（可能已结束），无法控制")
+    if action == "pause":
+        if t.status != "running" or not c.pause():
+            raise HTTPException(409, "仅运行中的任务可暂停")
+        new_status = "paused"
+    elif action == "resume":
+        if t.status != "paused" or not c.resume():
+            raise HTTPException(409, "仅暂停中的任务可继续")
+        new_status = "running"
+    elif action == "cancel":
+        if t.status not in ("running", "paused") or not c.cancel():
+            raise HTTPException(409, "仅运行/暂停中的任务可停止")
+        new_status = "cancelling"   # orchestrator finalizes to "cancelled" at the next checkpoint
+    else:
+        raise HTTPException(400, "unknown action")
+    t.status = new_status
+    db.commit()
+    db.refresh(t)
+    await events.emit(tid, "task.status", {"status": new_status, "phase": t.phase,
+                                           "counts": t.counts or {}})
+    return task_out(t)
+
+
+@router.post("/tasks/{tid}/pause")
+async def pause_task(tid: str, db: Session = Depends(get_db)):
+    return await _control_action(tid, "pause", db)
+
+
+@router.post("/tasks/{tid}/resume")
+async def resume_task(tid: str, db: Session = Depends(get_db)):
+    return await _control_action(tid, "resume", db)
+
+
+@router.post("/tasks/{tid}/cancel")
+async def cancel_task(tid: str, db: Session = Depends(get_db)):
+    return await _control_action(tid, "cancel", db)
 
 
 @router.get("/tasks/{tid}/timeline")

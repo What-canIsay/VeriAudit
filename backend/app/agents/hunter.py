@@ -136,7 +136,8 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
                 on_tool=on_tool, on_step=on_step,
                 max_steps=budget.get("llm_hunt_steps", settings.llm_hunt_steps),
                 finalize_hint=finalize_hint, finalize_at=3,
-                timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"))
+                timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"),
+                checkpoint=ctx.control.checkpoint)
 
 
 def _deterministic_pool(ctx: AuditContext):

@@ -136,7 +136,7 @@ def _preheat(ctx: AuditContext, run_id, env: dict) -> None:
                     stop_tools={"preheat_ready"}, finalize_hint=finalize_hint, finalize_at=2,
                     timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"),
                     extend_when=lambda: any(recent), extend_factor=settings.provisioner_step_extension,
-                    extend_hard_cap=settings.provisioner_step_hard_cap)
+                    extend_hard_cap=settings.provisioner_step_hard_cap, checkpoint=ctx.control.checkpoint)
     except Exception:
         pass
     if result.get("memo"):
@@ -201,7 +201,7 @@ def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -
                     finalize_hint=finalize_hint, finalize_at=3,
                     timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"),
                     extend_when=lambda: any(recent), extend_factor=settings.provisioner_step_extension,
-                    extend_hard_cap=settings.provisioner_step_hard_cap)
+                    extend_hard_cap=settings.provisioner_step_hard_cap, checkpoint=ctx.control.checkpoint)
     except Exception:
         pass
 

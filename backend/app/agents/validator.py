@@ -281,7 +281,7 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
         finalize_hint=finalize_hint, finalize_at=2,
         timeout=b.get("llm_timeout_sec"), num_retries=b.get("llm_num_retries"),
         extend_when=lambda: any(recent), extend_factor=settings.validator_step_extension,
-        extend_hard_cap=settings.validator_step_hard_cap))
+        extend_hard_cap=settings.validator_step_hard_cap, checkpoint=ctx.control.checkpoint))
 
     if result:   # model concluded
         v = result.get("verdict")

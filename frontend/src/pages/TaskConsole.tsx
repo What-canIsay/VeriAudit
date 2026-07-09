@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft, Activity, FileText, X, ChevronRight, Loader2, CheckCircle2, AlertTriangle,
+  Pause, Play, Square, Clock,
 } from "lucide-react";
 import { api } from "../api";
 import type { Finding, Task } from "../types";
@@ -28,13 +29,15 @@ export default function TaskConsole() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [selected, setSelected] = useState<Finding | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!id) return;
     setHistEvents([]);
     api.getTask(id).then((t) => {
       setTask(t);
-      const done = ["succeeded", "failed"].includes(t.status);
+      const done = ["succeeded", "failed", "cancelled"].includes(t.status);
       setLive(!done);
       if (done) {
         api.findings(id).then(setFindings).catch(() => {});
@@ -47,6 +50,34 @@ export default function TaskConsole() {
     if (!id || live === false) return;
     if (findingIds.length > 0 || finished) api.findings(id).then(setFindings).catch(() => {});
   }, [id, live, findingIds.length, finished]);
+
+  // when a live task finishes, refetch it once so finished_at freezes the elapsed timer.
+  useEffect(() => {
+    if (id && finished) api.getTask(id).then(setTask).catch(() => {});
+  }, [id, finished]);
+
+  // elapsed timer: ticks every second from started_at, freezes at finished_at.
+  const startedMs = task?.started_at ? Date.parse(task.started_at) : null;
+  const finishedMs = task?.finished_at ? Date.parse(task.finished_at) : null;
+  useEffect(() => {
+    if (finishedMs || !startedMs) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [finishedMs, startedMs]);
+  const elapsedMs = startedMs ? (finishedMs || nowMs) - startedMs : null;
+
+  async function doControl(action: "pause" | "resume" | "cancel") {
+    if (!id || busy) return;
+    setBusy(true);
+    try {
+      const fn = action === "pause" ? api.pauseTask : action === "resume" ? api.resumeTask : api.cancelTask;
+      setTask(await fn(id));   // optimistic; SSE task.status will confirm
+    } catch {
+      /* ignore — SSE reflects the true state */
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function openFinding(fid: string) {
     const full = await api.finding(fid);
@@ -86,16 +117,52 @@ export default function TaskConsole() {
             <div className="text-xs text-faint font-mono truncate">task {id}</div>
           </div>
         </div>
-        <button className="btn-outline" onClick={() => setReportOpen(true)} disabled={!finished && liveStatus !== "succeeded"}>
-          <FileText className="w-4 h-4" /> 审计报告
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* elapsed timer */}
+          {startedMs && (
+            <span className="chip text-muted border-border font-mono tabular-nums" title="审计已运行时长">
+              <Clock className="w-3.5 h-3.5" /> {fmtElapsed(elapsedMs)}
+            </span>
+          )}
+          {/* run controls */}
+          {liveStatus === "running" && (
+            <>
+              <button className="btn-outline" disabled={busy} onClick={() => doControl("pause")}>
+                <Pause className="w-4 h-4" /> 暂停
+              </button>
+              <button className="btn-outline text-critical border-critical/40 hover:bg-critical/10"
+                disabled={busy} onClick={() => doControl("cancel")}>
+                <Square className="w-4 h-4" /> 停止
+              </button>
+            </>
+          )}
+          {liveStatus === "paused" && (
+            <>
+              <button className="btn-primary" disabled={busy} onClick={() => doControl("resume")}>
+                <Play className="w-4 h-4" /> 继续
+              </button>
+              <button className="btn-outline text-critical border-critical/40 hover:bg-critical/10"
+                disabled={busy} onClick={() => doControl("cancel")}>
+                <Square className="w-4 h-4" /> 停止
+              </button>
+            </>
+          )}
+          {liveStatus === "cancelling" && (
+            <span className="chip text-amber-300 border-amber-500/40 bg-amber-500/10">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> 停止中…
+            </span>
+          )}
+          <button className="btn-outline" onClick={() => setReportOpen(true)} disabled={!finished && liveStatus !== "succeeded"}>
+            <FileText className="w-4 h-4" /> 审计报告
+          </button>
+        </div>
       </header>
 
       {/* phase stepper */}
       <div className="px-6 py-3 border-b border-border flex items-center gap-1 shrink-0 overflow-x-auto">
         {PHASES.map((p, i) => {
           const done = PHASES.indexOf(curPhase) > i || liveStatus === "succeeded";
-          const active = curPhase === p && liveStatus !== "succeeded";
+          const active = curPhase === p && !["succeeded", "failed", "cancelled"].includes(liveStatus);
           return (
             <div key={p} className="flex items-center gap-1 shrink-0">
               <span className={`chip ${done ? "text-accent border-accent/40 bg-accent/10" : active ? "text-fg border-accent/60 bg-surface-3" : "text-faint border-border"}`}>
@@ -220,6 +287,9 @@ export default function TaskConsole() {
 function StatusPill({ status }: { status: string }) {
   const map: Record<string, { t: string; c: string }> = {
     running: { t: "进行中", c: "text-accent border-accent/40 bg-accent/10" },
+    paused: { t: "已暂停", c: "text-amber-300 border-amber-500/40 bg-amber-500/10" },
+    cancelling: { t: "停止中", c: "text-amber-300 border-amber-500/40 bg-amber-500/10" },
+    cancelled: { t: "已停止", c: "text-muted border-border" },
     succeeded: { t: "已完成", c: "text-accent border-accent/40 bg-accent/10" },
     failed: { t: "失败", c: "text-critical border-critical/40 bg-critical/10" },
     queued: { t: "排队中", c: "text-muted border-border" },
@@ -231,4 +301,12 @@ function StatusPill({ status }: { status: string }) {
       {m.t}
     </span>
   );
+}
+
+function fmtElapsed(ms: number | null): string {
+  if (ms == null || ms < 0) return "00:00";
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
 }

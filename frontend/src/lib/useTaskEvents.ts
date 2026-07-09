@@ -56,7 +56,7 @@ export function useTaskEvents(taskId: string | undefined, live: boolean = true) 
       }
       if (name === "task.finished") {
         if (data.counts) setCounts(data.counts);
-        setStatus(data.error ? "failed" : "succeeded");
+        setStatus(data.error ? "failed" : data.cancelled ? "cancelled" : "succeeded");
         setFinished(true);
         source.close();
       }
