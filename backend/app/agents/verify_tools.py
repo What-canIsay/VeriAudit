@@ -57,7 +57,17 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
-        "name": "cg_path", "description": "查两处代码之间的函数调用链（入口→sink）。",
+        "name": "cg_path", "description": "查两处代码之间的函数调用链（入口→sink），带调用点行号。",
+        "parameters": {"type": "object", "properties": {
+            "from_file": {"type": "string"}, "from_line": {"type": "integer"},
+            "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
+            "required": ["from_file", "from_line", "to_file", "to_line"]}}},
+    {"type": "function", "function": {
+        "name": "cg_subgraph", "description": "取某函数周围 radius 跳内的局部调用子图（有界）。",
+        "parameters": {"type": "object", "properties": {
+            "around": {"type": "string"}, "radius": {"type": "integer"}}, "required": ["around"]}}},
+    {"type": "function", "function": {
+        "name": "cg_dataflow", "description": "【污点/数据流,重】判断从疑似污点源(from)到危险汇聚点(to)是否存在真实数据流并给出路径——'控制可达'之上更强的'污点真的流到'。对核验/PoC 很有用,请对目标 source→sink 少量使用。from/to 用变量被使用/危险操作那一行。",
         "parameters": {"type": "object", "properties": {
             "from_file": {"type": "string"}, "from_line": {"type": "integer"},
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
@@ -173,7 +183,8 @@ def _sql_log(env: dict, action: str, auth: str) -> dict:
 
 def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
     if name in ("list_files", "read_file", "search_code", "analyze_dataflow", "search_vuln_kb",
-                "cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path"):
+                "cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path",
+                "cg_subgraph", "cg_dataflow"):
         return read_tools.dispatch(ctx, name, args)
 
     if name == "http_probe":

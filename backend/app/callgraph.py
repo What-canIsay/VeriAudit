@@ -458,25 +458,38 @@ def _joern_launch(joern: Path, name: str):
     return ["cmd", "/c", str(bat)] if bat.exists() else [str(joern / name)]
 
 
-def _joern_edges(root: Path, lang: str):
-    """Multi-language (incl. PHP/Go/Java, no build) call edges via Joern CPG. Below CodeQL
-    in the ladder; degrades to Tree-sitter on any failure."""
+def _ensure_joern_cpg(root: Path):
+    """Build (once, cached) a Joern CPG. Returns (cpg, joern_dir, java, env) or None.
+    Shared by call-edge extraction and the data-flow (taint) query."""
     if not settings.enable_joern_callgraph:
         return None
     joern, java = _joern_paths()
     if not (joern and java):
         return None
-    try:
-        cache = DATA_DIR / "joern" / (hashlib.md5(str(root).encode()).hexdigest()[:12])
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cpg = cache.with_suffix(".cpg.bin")
-        env = _joern_env(java)
+    cache = DATA_DIR / "joern" / (hashlib.md5(str(root).encode()).hexdigest()[:12])
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cpg = cache.with_suffix(".cpg.bin")
+    env = _joern_env(java)
+    if not cpg.exists():
+        try:
+            subprocess.run(_joern_launch(joern, "joern-parse") + [str(root), "-o", str(cpg)],
+                           env=env, capture_output=True, timeout=settings.joern_timeout_sec)
+        except Exception:
+            return None
         if not cpg.exists():
-            r = subprocess.run(_joern_launch(joern, "joern-parse") + [str(root), "-o", str(cpg)],
-                               env=env, capture_output=True, timeout=settings.joern_timeout_sec)
-            if not cpg.exists():
-                return None
-        script = cache.with_suffix(".sc")
+            return None
+    return cpg, joern, java, env
+
+
+def _joern_edges(root: Path, lang: str):
+    """Multi-language (incl. PHP/Go/Java, no build) call edges via Joern CPG. Below CodeQL
+    in the ladder; degrades to Tree-sitter on any failure."""
+    ec = _ensure_joern_cpg(root)
+    if not ec:
+        return None
+    cpg, joern, java, env = ec
+    try:
+        script = Path(str(cpg) + ".edges.sc")
         cpg_fwd = str(cpg).replace("\\", "/")
         script.write_text(
             f'importCpg("{cpg_fwd}")\n'
@@ -502,6 +515,135 @@ def _joern_edges(root: Path, lang: str):
         return (rows, "joern") if rows else None
     except Exception:
         return None
+
+
+_DF_CACHE: Dict[tuple, dict] = {}
+
+
+def dataflow(root: Path, from_file: str, from_line: int, to_file: str, to_line: int) -> dict:
+    """Taint/data-flow: does tainted data actually FLOW from (from_file:from_line) to the
+    sink at (to_file:to_line)? Precision ladder CodeQL > Joern (mirrors the call graph):
+    CodeQL's dataflow is strong for python/js; Joern covers everything else (incl. PHP/Go)
+    but is weaker for dynamic languages. Result-memoized. Heavier than the call graph."""
+    key = (str(root), from_file, int(from_line), to_file, int(to_line))
+    if key in _DF_CACHE:
+        return _DF_CACHE[key]
+    lang = _primary_lang(root)
+    res = None
+    if lang in _CODEQL_LANG:
+        res = _codeql_dataflow(root, lang, from_file, from_line, to_file, to_line)
+    if not (res and res.get("available") and not res.get("error")):
+        res = _joern_dataflow(root, from_file, from_line, to_file, to_line)
+    _DF_CACHE[key] = res
+    return res
+
+
+def _codeql_dataflow(root: Path, lang: str, from_file: str, from_line: int,
+                     to_file: str, to_line: int) -> Optional[dict]:
+    """CodeQL taint flow (source/sink via external predicates → query compiles once)."""
+    if not getattr(settings, "enable_codeql_callgraph", True):
+        return None
+    codeql = shutil.which("codeql")
+    ql = Path(__file__).parent / "cg_queries" / _CODEQL_LANG[lang] / "dataflow.ql"
+    if not codeql or not ql.exists():
+        return None
+    db = _codeql_db(root, _CODEQL_LANG[lang], codeql)
+    if not db:
+        return None
+    packs = _codeql_packs(codeql)
+    try:
+        src = db / "df_src.csv"
+        snk = db / "df_snk.csv"
+        src.write_text(f"{from_file.replace(chr(92), '/')},{int(from_line)}\n", encoding="utf-8")
+        snk.write_text(f"{to_file.replace(chr(92), '/')},{int(to_line)}\n", encoding="utf-8")
+        out = db / "df.bqrs"
+        cmd = [codeql, "query", "run", "--database", str(db), "--output", str(out),
+               f"--ram={settings.codeql_ram_mb}",
+               f"--external=srcloc={src}", f"--external=snkloc={snk}"]
+        if packs:
+            cmd += ["--additional-packs", packs]
+        cmd.append(str(ql))
+        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec)
+        if r.returncode != 0:
+            return None
+        dec = subprocess.run([codeql, "bqrs", "decode", "--format=csv", str(out)],
+                             capture_output=True, text=True, timeout=120)
+        if dec.returncode != 0:
+            return None
+        import csv as _csv
+        import io as _io
+        paths, seen = [], set()
+        for row in list(_csv.reader(_io.StringIO(dec.stdout or "")))[1:]:   # skip header
+            if len(row) >= 4:
+                p = f"{row[0]}:{row[1]} → {row[2]}:{row[3]}"
+                if p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+        count = len(paths)
+        return {"available": True, "engine": "codeql",
+                "tainted_flow": "yes" if count > 0 else "none_found",
+                "flow_count": count, "paths": paths[:3],
+                "note": "CodeQL 语义污点分析（精度高）。" + (
+                    "" if count > 0 else
+                    " 【未发现数据流≠一定安全：可能污点源/汇点定位差一行，或走了动态/框架路径；请 read_file 核实并可换相邻行再查】")}
+    except Exception:
+        return None
+
+
+def _joern_dataflow(root: Path, from_file: str, from_line: int, to_file: str, to_line: int) -> dict:
+    ec = _ensure_joern_cpg(root)
+    if not ec:
+        res = {"available": False,
+               "note": "数据流引擎不可用（需 Joern + JDK17+）；请用 read_file / analyze_dataflow 人工判断污点。"}
+        _DF_CACHE[key] = res
+        return res
+    cpg, joern, java, env = ec
+    ff, tf = from_file.replace("\\", "/"), to_file.replace("\\", "/")
+    cpg_fwd = str(cpg).replace("\\", "/")
+    script = Path(str(cpg) + ".df.sc")
+    script.write_text(
+        f'importCpg("{cpg_fwd}")\n'
+        'run.ossdataflow\n'
+        'import io.joern.dataflowengineoss.language._\n'
+        'def at(f:String, ln:Int) = cpg.expression'
+        '.filter(e => e.lineNumber.exists(_==ln) && e.file.name.exists(_.replace("\\\\","/").endsWith(f)))\n'
+        f'val src = at("{ff}", {int(from_line)})\n'
+        f'val snk = at("{tf}", {int(to_line)})\n'
+        'val flows = snk.reachableByFlows(src).l\n'
+        'println("DFCOUNT=" + flows.size)\n'
+        'flows.take(3).foreach { fl =>\n'
+        '  val hops = fl.elements.map(e => (e.file.name.headOption.getOrElse("?").replace("\\\\","/"))'
+        ' + ":" + e.lineNumber.getOrElse(-1)).distinct\n'
+        '  println("DFPATH\\t" + hops.mkString(" -> "))\n'
+        '}\n', encoding="utf-8")
+    try:
+        r = subprocess.run(_joern_launch(joern, "joern") + ["--script", str(script)],
+                           env=env, capture_output=True, timeout=settings.joern_timeout_sec)
+        out = (r.stdout or b"").decode("utf-8", "replace")
+    except Exception:
+        return {"available": True, "error": "数据流查询超时/失败（该项目可能过大）；请 read_file 人工判断。",
+                "note": _note("joern")}
+    count, paths, seen = None, [], set()
+    for line in out.splitlines():
+        if line.startswith("DFCOUNT="):
+            try:
+                count = int(line.split("=", 1)[1])
+            except Exception:
+                count = None
+        elif line.startswith("DFPATH\t"):
+            p = line.split("\t", 1)[1]
+            if p not in seen:
+                seen.add(p)
+                paths.append(p)
+    if count is None:
+        return {"available": True, "error": "查询未返回结果（可能端点定位失败）；请核对 file:line。",
+                "note": _note("joern")}
+    return {"available": True, "engine": "joern",
+            "tainted_flow": "yes" if count > 0 else "none_found",
+            "flow_count": count, "paths": paths[:3],
+            "note": _note("joern") + (
+                "" if count > 0 else
+                " 【未发现数据流≠安全：Joern 对 Python/JS/PHP 的污点分析较弱，且漏动态派发；请 read_file 人工确认】")}
 
 
 def _parse_csv(text: str):
@@ -607,7 +749,7 @@ def overview(root: Path) -> dict:
             "attack_surface_more": max(0, len(g.roots) - 40), "note": note}
 
 
-def neighbors(root: Path, target: str, direction: str) -> dict:
+def neighbors(root: Path, target: str, direction: str, offset: int = 0, limit: int = 40) -> dict:
     g = get_graph(root)
     if g is None:
         return {"available": False}
@@ -627,12 +769,51 @@ def neighbors(root: Path, target: str, direction: str) -> dict:
                 cs = g._callsite(n, k)
                 out.append(_fmt(g, n) + (f"（在 {n[0]}:{cs} 处调用）" if cs else "（调用点未知）"))
     out = sorted(set(out))
+    limit = max(1, min(int(limit or 40), 60))
+    offset = max(0, int(offset or 0))
+    page = out[offset:offset + limit]
+    remaining = max(0, len(out) - offset - len(page))
     note = _note(g.engine) + (
-        f" 【已截断：仅显示前 40/共 {len(out)} 条；如需更多请对具体函数再查或 read_file】"
-        if len(out) > 40 else " 【注意：图可能缺边，本清单未必完整，勿据此认定'没有更多'】")
+        f" 【分页：本页 {offset}–{offset + len(page)}／共 {len(out)}；还有 {remaining} 条，用 offset={offset + limit} 继续翻】"
+        if remaining > 0 else " 【注意：图可能缺边，本清单未必完整，勿据此认定'没有更多'】")
     return {"available": True, "found": True, "target": [_fmt(g, k) for k in keys],
-            direction: out[:40], "shown": min(40, len(out)), "total": len(out),
+            direction: page, "offset": offset, "shown": len(page), "total": len(out),
             "engine": g.engine, "note": note}
+
+
+def subgraph(root: Path, around: str, radius: int = 1, limit: int = 60) -> dict:
+    """Local neighborhood (callers+callees) within `radius` hops of a function — bounded."""
+    g = get_graph(root)
+    if g is None:
+        return {"available": False}
+    keys = _resolve(g, around)
+    if not keys:
+        return {"available": True, "found": False, "note": "未找到该函数；请用 file:line 或先 read_file。"}
+    radius = max(1, min(int(radius or 1), 3))
+    limit = max(10, min(int(limit or 60), 100))
+    seen, frontier = set(keys), set(keys)
+    for _ in range(radius):
+        nxt = set()
+        for k in frontier:
+            nxt |= set(g.edges.get(k, ())) | set(g.redges.get(k, ()))
+        nxt -= seen
+        seen |= nxt
+        frontier = nxt
+        if len(seen) >= limit:
+            break
+    nodeset = set(sorted(seen)[:limit])
+    edges = []
+    for a in sorted(nodeset):
+        for b in g.edges.get(a, ()):
+            if b in nodeset:
+                cs = g._callsite(a, b)
+                edges.append(f"{g.funcs[a]['name']} → {g.funcs[b]['name']}"
+                             + (f"（{a[0]}:{cs}）" if cs else ""))
+    return {"available": True, "found": True, "center": [_fmt(g, k) for k in keys],
+            "radius": radius, "nodes": [_fmt(g, k) for k in sorted(nodeset)],
+            "node_count": len(seen), "edges": edges[:80],
+            "truncated": len(seen) > limit, "engine": g.engine,
+            "note": _note(g.engine) + " 【子图可能缺边/被截断，未必完整】"}
 
 
 def reachable_query(root: Path, file: str, line: int, entrypoints: List[dict]) -> dict:

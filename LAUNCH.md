@@ -234,6 +234,8 @@ VeriAudit 的漏洞猎手（LLM）可**自主调用**以下专业工具（各司
 - `JOERN_DIR` / `JOERN_JAVA_HOME`：joern-cli 目录与 JDK17+（留空自动探测 `D:/Tools`）。
 - `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` / `JOERN_TIMEOUT_SEC`：内存与超时（内存不足或超时会降级）。
 
+**智能体查看调用图的方式**（导航式、有界、带 file:line 锚点，猎手/验证官按需调用）：`cg_overview`（攻击面概览）、`cg_callers`/`cg_callees`（谁调它/它调谁，带调用点行号，`offset` 翻页）、`cg_reachable`（危险点是否可从入口到达 + 入口→sink 链 + 有几个入口可达）、`cg_path`（两点调用链）、`cg_subgraph`（某函数周围 N 跳子图）、`cg_dataflow`（**污点数据流**：判断污点是否真的从 source 流到 sink，比"控制可达"更强更准；走 **CodeQL>Joern 阶梯**——Python 用 CodeQL 语义污点、其余语言用 Joern `reachableByFlows`；较重、按需少量用）。每个结果都带"图可能有错/缺边、不可达≠安全、务必 read_file 核实"的显式提示。
+
 **降级会怎样提示**：一旦命中的引擎低于该语言的理想引擎（如 Python 没走到 CodeQL、Go/PHP 没走到 Joern），前端审计控制台顶部会显示**"能力降级提示"横幅**，并给出**具体原因与解决办法**（缺 codeql / 缺 JDK17+ / 缺 php·node·go / 内存不足 / 已被开关关闭）。同理，**LLM Mock 模式、Docker 不可用、专业扫描器缺失**等降级也会在此横幅醒目提示，避免误以为系统在满血运行。
 
 ---

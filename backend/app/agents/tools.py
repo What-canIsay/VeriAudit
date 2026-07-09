@@ -62,17 +62,31 @@ TOOL_SCHEMAS: List[dict] = [
         "name": "cg_overview", "description": "查看审计前已构建的【整项目调用图】概览：引擎、函数/边数、对外入口函数（攻击面）。开挖前先摸清结构。",
         "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {
-        "name": "cg_callers", "description": "在调用图上查【谁调用了】目标函数（反向）。target 用 'file:line'（唯一无歧义，推荐）或函数名（同名会全部列出）。",
-        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+        "name": "cg_callers", "description": "查【谁调用了】目标函数（反向），结果带调用点行号。target 用 'file:line'（推荐）或函数名。超 40 条用 offset 翻页。",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"}, "offset": {"type": "integer", "description": "分页偏移，默认0"}},
+            "required": ["target"]}}},
     {"type": "function", "function": {
-        "name": "cg_callees", "description": "在调用图上查目标函数【调用了谁】（正向）。target 同 cg_callers。",
-        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
+        "name": "cg_callees", "description": "查目标函数【调用了谁】（正向），带调用点行号。超 40 条用 offset 翻页。",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string"}, "offset": {"type": "integer"}}, "required": ["target"]}}},
     {"type": "function", "function": {
-        "name": "cg_reachable", "description": "判断某危险汇聚点 (file,line) 是否能从对外入口经调用链到达，并返回 入口→sink 链。用于降误报、定位真正可打的点。",
+        "name": "cg_reachable", "description": "判断某危险汇聚点 (file,line) 是否能从对外入口经调用链到达，返回 入口→sink 链（带调用点）及有多少入口可达。用于降误报、定位可打点。",
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
-        "name": "cg_path", "description": "在调用图上查两处代码之间的函数调用链（如 入口→sink）。",
+        "name": "cg_path", "description": "查两处代码之间的函数调用链（如 入口→sink），带调用点行号。",
+        "parameters": {"type": "object", "properties": {
+            "from_file": {"type": "string"}, "from_line": {"type": "integer"},
+            "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
+            "required": ["from_file", "from_line", "to_file", "to_line"]}}},
+    {"type": "function", "function": {
+        "name": "cg_subgraph", "description": "取某函数周围 radius 跳内的局部调用子图（调用者+被调用者+边），有界。用于快速了解一块代码的调用结构。",
+        "parameters": {"type": "object", "properties": {
+            "around": {"type": "string", "description": "'file:line' 或函数名"},
+            "radius": {"type": "integer", "description": "跳数，1-3，默认1"}}, "required": ["around"]}}},
+    {"type": "function", "function": {
+        "name": "cg_dataflow", "description": "【污点/数据流,重】判断从疑似污点源(from)到危险汇聚点(to)是否存在真实数据流,并给出流经路径——这是'控制可达'之上更强的'污点真的流到了'。比可达性更准但更慢,请对高价值的 source→sink 对少量使用。from/to 用变量被使用/危险操作发生的那一行(不是函数定义行)。",
         "parameters": {"type": "object", "properties": {
             "from_file": {"type": "string"}, "from_line": {"type": "integer"},
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
@@ -196,17 +210,23 @@ def dispatch(ctx, name: str, args: dict) -> dict:
             reach = analysis.reachability_check(root, cand, eps)
             return {"taint_path": taint["taint_path"], "has_source": taint["has_source"],
                     "reachability": reach}
-        if name in ("cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path"):
+        if name in ("cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path",
+                    "cg_subgraph", "cg_dataflow"):
             from .. import callgraph
             if name == "cg_overview":
                 return callgraph.overview(root)
             if name == "cg_callers":
-                return callgraph.neighbors(root, args.get("target", ""), "callers")
+                return callgraph.neighbors(root, args.get("target", ""), "callers", int(args.get("offset", 0)))
             if name == "cg_callees":
-                return callgraph.neighbors(root, args.get("target", ""), "callees")
+                return callgraph.neighbors(root, args.get("target", ""), "callees", int(args.get("offset", 0)))
             if name == "cg_reachable":
                 return callgraph.reachable_query(root, args.get("file", ""), int(args.get("line", 0)),
                                                  ctx.state.get("entrypoints", []))
+            if name == "cg_subgraph":
+                return callgraph.subgraph(root, args.get("around", ""), int(args.get("radius", 1)))
+            if name == "cg_dataflow":
+                return callgraph.dataflow(root, args["from_file"], int(args["from_line"]),
+                                          args["to_file"], int(args["to_line"]))
             return callgraph.call_path(root, args["from_file"], int(args["from_line"]),
                                        args["to_file"], int(args["to_line"]))
         if name == "search_vuln_kb":
