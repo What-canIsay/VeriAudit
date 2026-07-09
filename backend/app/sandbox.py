@@ -345,13 +345,25 @@ def _dec(b) -> str:
     return b or ""
 
 
+# Map a project's dominant source language → the runtime family we stand it up with.
+# The base container is Debian (python:3.11-slim + apt); Python is ready out of the box,
+# node/php runtimes are apt-installed on demand by the deterministic/LLM provisioner.
+_LANG_RUNTIME = {"python": "python", "javascript": "node", "typescript": "node",
+                 "node": "node", "php": "php"}
+
+
+def _runtime_for(lang: str) -> str:
+    return _LANG_RUNTIME.get((lang or "").lower(), "python")
+
+
 def start_persistent(root: Path, task_id: str, lang: str) -> Optional[dict]:
-    """docker run -d a kept-alive container and copy the workspace in. Returns an env handle."""
-    if lang != "python":
-        return None
+    """docker run -d a kept-alive container and copy the workspace in. Returns an env handle.
+    Language-agnostic: the container is Debian+apt, so python/node/php apps all stand up here
+    (the runtime is apt-installed on demand for non-python)."""
     image = _ensure_web_image()
     if not image:
         return None
+    runtime = _runtime_for(lang)
     name = f"veri-prov-{task_id[:10]}"
     _docker("rm", "-f", name)  # clear any stale
     net = [] if settings.sandbox_allow_network else ["--network", "none"]
@@ -365,7 +377,7 @@ def start_persistent(root: Path, task_id: str, lang: str) -> Optional[dict]:
     if r.returncode != 0:
         return None
     env = {"container": name, "workdir": "/tmp/app", "port": None, "ready": False,
-           "lang": "python", "base_path": ""}
+           "lang": (lang or "python"), "runtime": runtime, "base_path": ""}
     exec_in(env, "mkdir -p /tmp/app", 30)
     cp = _docker("cp", f"{str(root)}/.", f"{name}:/tmp/app", timeout=180)
     if cp.returncode != 0:
@@ -415,9 +427,33 @@ def stop_persistent(env: Optional[dict]) -> None:
 
 
 def deterministic_provision(root: Path, env: dict) -> dict:
-    """Cheap, zero-token first attempt: install detected frameworks + requirements,
-    run Django migrations if present, start the app, wait for readiness."""
+    """Cheap, zero-token first attempt to stand the app up, dispatched by runtime family.
+    Anything it can't handle returns ready=False with a reason → the LLM provisioner takes
+    over (it can apt-install runtimes and improvise)."""
+    runtime = env.get("runtime", "python")
+    if runtime == "python":
+        return _provision_python(root, env)
+    if runtime == "node":
+        return _provision_node(root, env)
+    if runtime == "php":
+        return _provision_php(root, env)
+    return {"ready": False, "reason": f"暂无 {runtime} 的确定性搭建路径，转由模型自主搭建。"}
+
+
+def _wait_ready(env: dict, port: int, cmd: str, tries: int = 40) -> dict:
     import time as _t
+    exec_detached(env, cmd)
+    for _ in range(tries):
+        if check_ready(env, port)["up"]:
+            env["port"] = port
+            env["ready"] = True
+            return {"ready": True, "port": port, "start": cmd}
+        _t.sleep(0.5)
+    tail = exec_in(env, "tail -c 600 /tmp/app.log", 20)["stdout"]
+    return {"ready": False, "port": port, "reason": "应用未在预期端口就绪。", "log": tail}
+
+
+def _provision_python(root: Path, env: dict) -> dict:
     pys = _py_files(root)
     fw = " ".join(_detect_frameworks(pys))
     if fw:
@@ -428,17 +464,85 @@ def deterministic_provision(root: Path, env: dict) -> dict:
         exec_in(env, "python manage.py migrate --noinput 2>&1 | tail -3 || true", 180)
     start = _derive_start(root, pys)
     if not start:
-        return {"ready": False, "reason": "未能推导启动命令。"}
-    cmd, port = start
-    exec_detached(env, cmd)
-    for _ in range(40):
-        if check_ready(env, port)["up"]:
-            env["port"] = port
-            env["ready"] = True
-            return {"ready": True, "port": port, "start": cmd}
-        _t.sleep(0.5)
-    tail = exec_in(env, "tail -c 600 /tmp/app.log", 20)["stdout"]
-    return {"ready": False, "port": port, "reason": "应用未在预期端口就绪。", "log": tail}
+        return {"ready": False, "reason": "未能推导 Python 启动命令。"}
+    return _wait_ready(env, start[1], start[0])
+
+
+def _provision_node(root: Path, env: dict) -> dict:
+    # ensure a node runtime (base image is python-only) then install deps + start
+    chk = exec_in(env, "command -v node >/dev/null 2>&1 && echo Y || echo N", 20)
+    if "Y" not in (chk.get("stdout") or ""):
+        exec_in(env, "apt-get update -qq && apt-get install -y -qq nodejs npm 2>&1 | tail -3 || true", 600)
+    if (root / "package.json").exists():
+        exec_in(env, "npm install --no-audit --no-fund 2>&1 | tail -5 || true", 600)
+    start = _derive_start_node(root)
+    if not start:
+        return {"ready": False, "reason": "未能推导 Node 启动命令（无 package.json start/main 或 server/app/index.js）。"}
+    return _wait_ready(env, start[1], start[0])
+
+
+def _provision_php(root: Path, env: dict) -> dict:
+    chk = exec_in(env, "command -v php >/dev/null 2>&1 && echo Y || echo N", 20)
+    if "Y" not in (chk.get("stdout") or ""):
+        exec_in(env, "apt-get update -qq && apt-get install -y -qq "
+                     "php-cli php-mysql php-sqlite3 php-xml php-mbstring php-curl php-gd 2>&1 | tail -3 || true", 600)
+    if (root / "composer.json").exists():
+        exec_in(env, "command -v composer >/dev/null 2>&1 || apt-get install -y -qq composer 2>&1 | tail -2 ; "
+                     "composer install --no-interaction --no-progress 2>&1 | tail -5 || true", 600)
+    docroot = _php_docroot(root)
+    port = 8000
+    return _wait_ready(env, port, f"php -S 127.0.0.1:{port} -t '{docroot}'", tries=30)
+
+
+def _derive_start_node(root: Path) -> Optional[Tuple[str, int]]:
+    import json as _json
+    port = _guess_node_port(root)
+    pj = root / "package.json"
+    if pj.exists():
+        try:
+            data = _json.loads(analysis.read_text(pj) or "{}")
+        except Exception:
+            data = {}
+        if isinstance(data.get("scripts"), dict) and data["scripts"].get("start"):
+            return ("npm start", port)
+        main = data.get("main")
+        if main and (root / main).exists():
+            return (f"node '{main}'", port)
+    for cand in ("server.js", "app.js", "index.js", "src/index.js", "src/server.js", "bin/www"):
+        if (root / cand).exists():
+            return (f"node '{cand}'", port)
+    return None
+
+
+def _guess_node_port(root: Path) -> int:
+    for p, lang in analysis.iter_source_files(root):
+        if lang not in ("javascript", "typescript"):
+            continue
+        txt = analysis.read_text(p)
+        m = re.search(r"\.listen\(\s*(\d{2,5})", txt) or re.search(r"PORT\s*[|=]{1,2}\s*(\d{2,5})", txt)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+    return 3000
+
+
+def _php_docroot(root: Path) -> str:
+    for d in ("public", "web", "htdocs", "www", "src/public"):
+        if (root / d / "index.php").exists():
+            return d
+    if (root / "index.php").exists():
+        return "."
+    try:
+        for p in root.rglob("index.php"):
+            if any(seg in _SKIP_TAR for seg in p.parts):
+                continue
+            rel = str(p.parent.relative_to(root)).replace("\\", "/")
+            return rel or "."
+    except Exception:
+        pass
+    return "."
 
 
 def _env_payload_for(rid: str) -> Tuple[Optional[str], Optional[str]]:

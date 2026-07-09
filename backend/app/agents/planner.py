@@ -33,9 +33,17 @@ async def run(ctx: AuditContext) -> dict:
     if prof.get("tier"):
         plan["scale"] = {"tier": prof["tier"], "complexity": prof.get("complexity")}
     if llm.enabled:
+        m = (prof.get("metrics") or {})
+        stack_line = (f"语言分布={m.get('languages')}；入口点≈{m.get('n_entrypoints')}；"
+                      f"依赖≈{m.get('n_deps')}；含数据库={m.get('has_db')}；需构建={m.get('needs_build')}；"
+                      f"多语言={m.get('polyglot')}")
         j = await asyncio.to_thread(
             llm.judge, "planner", prompts.PLANNER,
-            f"项目深度档位={depth}。用一句话说明审计重点方向。以 JSON 返回 {{\"focus\": \"...\"}}。")
+            f"审计深度档位={depth}。项目画像：{stack_line}。\n"
+            f"请据此给出本次审计的【重点方向】：最值得优先排查的 2-4 类漏洞（结合语言/框架/是否有数据库判断，"
+            f"例如 PHP+MySQL 优先 SQL 注入/文件包含/任意文件上传，Node 优先原型污染/命令注入/SSRF，"
+            f"Python Web 优先注入/反序列化/SSTI 等），以及最该重点盯的入口或组件类型。"
+            f"以 JSON 返回 {{\"focus\": \"一段话，具体、可执行\"}}。")
         if j and j.get("focus"):
             plan["focus"] = j["focus"]
 

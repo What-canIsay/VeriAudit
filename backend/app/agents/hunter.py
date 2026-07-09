@@ -76,10 +76,10 @@ def _callgraph_status_line(ctx: AuditContext) -> str:
     eng = cg.get("engine")
     if eng in _CG_ENGINE_DESC:
         return (f"【调用图状态】构建成功，绘图引擎 = {_CG_ENGINE_DESC[eng]}。"
-                f"可用 cg_overview / cg_callers / cg_callees / cg_reachable / cg_path 查询；"
+                f"可用 cg_overview / cg_callers / cg_callees / cg_path / cg_subgraph / cg_dataflow / check_reachability 查询；"
                 f"但图不保证正确，任何结论务必 read_file 核实，且『不可达』不代表安全。\n")
     return ("【调用图状态】构建失败 / 不可用：cg_* 工具会返回 unavailable，"
-            "请直接用 read_file / search_code / analyze_dataflow 判断可达性，不要依赖调用图。\n")
+            "请直接用 read_file / search_code / check_reachability 判断可达性，不要依赖调用图。\n")
 
 
 def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
@@ -87,8 +87,16 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     eps = ctx.state.get("entrypoints", [])
     langs = profile.get("languages", {})
     top = sorted({loc for e in eps for loc in [e["location"]["file"]]})[:12]
+    focus = (ctx.state.get("plan", {}) or {}).get("focus")
+    attack_surface = ctx.state.get("attack_surface")
+    guidance = ""
+    if focus:
+        guidance += f"【编排官下发的审计重点，请优先据此开挖（但不局限于此）】{focus}\n"
+    if attack_surface:
+        guidance += f"【侦察员研判的攻击面】{attack_surface}\n"
     user = (f"项目语言分布：{langs}；已识别对外入口点 {len(eps)} 个。"
             f"部分入口文件：{top}。\n"
+            + guidance
             + _callgraph_status_line(ctx) +
             f"请以资深审计员的方式自主审计本项目，发现真实安全漏洞，并对每个可疑点调用 report_candidate 登记。"
             f"你可自由决定调用哪些工具、以什么顺序进行。")
@@ -106,7 +114,7 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     finalize_hint = ("步数即将用尽。请【立即停止探索、不要再读取新文件】，"
                      "现在就对你已经识别到的每一个可疑漏洞调用 report_candidate 逐个登记"
                      "（可连续多次调用）。宁可多报，下游有独立验证。")
-    llm.agentic("hunter", prompts.HUNTER, user, tools.TOOL_SCHEMAS,
+    llm.agentic("hunter", prompts.HUNTER, user, tools.active_schemas(),
                 lambda n, a: tools.dispatch(ctx, n, a),
                 on_tool=on_tool, on_step=on_step,
                 max_steps=budget.get("llm_hunt_steps", settings.llm_hunt_steps),

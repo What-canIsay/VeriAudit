@@ -23,13 +23,26 @@ async def run(ctx: AuditContext) -> dict:
         await ctx.finish_agent(run_id, {"ready": False})
         return {"ready": False}
 
-    await ctx.think(run_id, "启动常驻沙箱容器并载入项目源码…")
-    env = await asyncio.to_thread(sandbox.start_persistent, ctx.root, ctx.task_id, "python")
+    lang = _primary_language(ctx)
+    runtime = sandbox._runtime_for(lang)
+    await ctx.think(run_id, f"启动常驻沙箱容器并载入项目源码（主语言 {lang} → 运行时 {runtime}）…")
+    env = await asyncio.to_thread(sandbox.start_persistent, ctx.root, ctx.task_id, lang)
     if not env:
-        await ctx.think(run_id, "无法启动常驻容器（当前仅支持 Python 项目 / 基础镜像缺失），回落逐候选复现。")
+        await ctx.think(run_id, "无法启动常驻容器（基础镜像缺失或 Docker 异常），回落逐候选复现。")
+        await ctx.degrade("环境搭建",
+                          "无法启动常驻沙箱容器（基础镜像 python:3.11-slim 缺失或 Docker 异常）："
+                          "动态复现回落逐候选轻量尝试/静态结论。", "warn")
         await ctx.finish_agent(run_id, {"ready": False})
         return {"ready": False}
     ctx.state["env"] = env
+    ctx.state["provision_runtime"] = runtime
+    # honest disclosure: node/php get a real deterministic path + full agentic repro; other
+    # runtimes (go/java/…) have no deterministic path and rely on the LLM apt-installing +
+    # building — flag that so the user isn't misled about dynamic-repro coverage.
+    if runtime not in ("python", "node", "php"):
+        await ctx.degrade("动态复现覆盖",
+                          f"主语言 {lang} 无确定性搭建路径：将尝试由模型自主 apt 安装运行时并构建；"
+                          f"若失败则回落静态结论（静态发现能力不受影响）。", "warn")
 
     # 1) cheap deterministic attempt (zero-token)
     await ctx.think(run_id, "先尝试确定性搭建：检测框架/依赖并启动应用。")
@@ -69,6 +82,17 @@ async def _maybe_preheat(ctx: AuditContext, run_id, env: dict) -> None:
     await asyncio.to_thread(_preheat, ctx, run_id, env)
     if ctx.state.get("verify_setup"):
         await ctx.emit("preheat.ready", {"sessions": list((ctx.state.get("verify_sessions") or {}).keys())})
+
+
+def _primary_language(ctx: AuditContext) -> str:
+    """Dominant source language from Recon's stack detection (languages is a count dict,
+    already sorted desc). Drives which runtime we stand the app up with."""
+    langs = (ctx.state.get("profile", {}) or {}).get("languages") or {}
+    if isinstance(langs, dict) and langs:
+        return max(langs, key=langs.get)
+    if isinstance(langs, list) and langs:
+        return langs[0]
+    return "python"
 
 
 def _needs_db_enrich(ctx: AuditContext) -> bool:

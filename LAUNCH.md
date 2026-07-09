@@ -149,7 +149,7 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `SANDBOX_TIMEOUT_SEC` | `60` | 单次利用请求窗口超时 |
 | `SANDBOX_BUILD_TIMEOUT_SEC` | `420` | 复现容器总超时（含装依赖+启动） |
 | `SANDBOX_ALLOW_NETWORK` | `true` | 复现容器放开网络（仅用于装项目依赖；设 `false` 走严格无出网，则只有依赖已内置的项目可复现） |
-| `ENABLE_PROVISIONER` | `true` | 是否启用环境构建官（仅 `deep` 档生效：一次把目标应用搭起来供复用） |
+| `ENABLE_PROVISIONER` | `true` | 是否启用环境构建官（仅 `deep` 档生效：一次把目标应用搭起来供复用）。**运行时按主语言自适应**：Python / Node(JS·TS) / PHP 有零 token 确定性搭建路径（容器基于 Debian+apt，按需 apt 装 node/php 运行时）；其余语言(Go/Java 等)无确定性路径→转由模型自主 apt 安装+构建，失败则如实降级为静态结论（**前端会弹"动态复现覆盖"降级提示**，静态发现能力不受影响） |
 | `ENABLE_PROVISIONER_PREHEAT` | `true` | **核验预热**：应用起来后，由模型按项目自适应地准备可复用的验证基底（测试账号、按角色登录的会话、seed 数据、备忘），让逐候选核验热启动、少走冤枉步数。**已取代** `PROVISIONER_LLM_ENRICH` |
 | `PREHEAT_MAX_STEPS` | `14` | 预热阶段工具步数上限（自适应下限） |
 | `PROVISIONER_LLM_ENRICH` | `false` | （已被预热取代，保留仅作兼容/关闭用） |

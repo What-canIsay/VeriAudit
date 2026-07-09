@@ -10,7 +10,7 @@ Design principles (per project requirements):
     SAST depth  : codeql_scan                (semantic dataflow, precision)
     secrets     : secret_scan                (gitleaks)
     supply chain: dependency_scan            (osv-scanner, SCA)
-    manual taint: analyze_dataflow           (targeted source->sink + reachability)
+    reachability: check_reachability         (control reachability + nearby-taint heuristic)
     knowledge   : search_vuln_kb             (cause / exploit / fix recipes)
     commit      : report_candidate           (record a vuln candidate for verification)
 
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List
 
 from .. import analysis, scanners
+from ..config import settings
 from ..knowledge import kb_lookup
 
 TOOL_SCHEMAS: List[dict] = [
@@ -55,7 +56,7 @@ TOOL_SCHEMAS: List[dict] = [
         "name": "dependency_scan", "description": "运行 OSV-Scanner 检测依赖中的已知 CVE（软件成分分析）。",
         "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {
-        "name": "analyze_dataflow", "description": "针对某处代码做 source→sink 污点追踪与可达性判定，用于确认某个可疑点是否真的可被不可信输入触达。",
+        "name": "check_reachability", "description": "判断某个可疑点 (file,line) 是否可被不可信输入触达：一次性综合① 调用图【控制可达性】（对外入口→sink 调用链，精度随引擎 CodeQL/Joern/Tree-sitter）与② 就近【污点源/净化】启发式。用于降误报、定位可打点。注：'不可达'≠安全（可能漏动态派发/框架路由）。要进一步证明某 source 确实把污点【数据流】到某 sink，请用更强的 cg_dataflow。",
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
@@ -70,10 +71,6 @@ TOOL_SCHEMAS: List[dict] = [
         "name": "cg_callees", "description": "查目标函数【调用了谁】（正向），带调用点行号。超 40 条用 offset 翻页。",
         "parameters": {"type": "object", "properties": {
             "target": {"type": "string"}, "offset": {"type": "integer"}}, "required": ["target"]}}},
-    {"type": "function", "function": {
-        "name": "cg_reachable", "description": "判断某危险汇聚点 (file,line) 是否能从对外入口经调用链到达，返回 入口→sink 链（带调用点）及有多少入口可达。用于降误报、定位可打点。",
-        "parameters": {"type": "object", "properties": {
-            "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
         "name": "cg_path", "description": "查两处代码之间的函数调用链（如 入口→sink），带调用点行号。",
         "parameters": {"type": "object", "properties": {
@@ -103,6 +100,28 @@ TOOL_SCHEMAS: List[dict] = [
             "confidence": {"type": "number"}, "rationale": {"type": "string"}},
             "required": ["vuln_type", "file", "line", "rationale"]}}},
 ]
+
+# Scanner tools that are only useful when their engine is enabled — hidden from the model
+# otherwise, so a disabled/absent scanner doesn't waste a tool slot + the model's attention
+# (tool-space interference: fewer, real tools > many overlapping/dead ones).
+_SETTING_GATED = {
+    "semgrep_scan": "enable_semgrep",
+    "codeql_scan": "enable_codeql",
+    "secret_scan": "enable_secret_scan",
+    "dependency_scan": "enable_dependency_scan",
+}
+
+
+def active_schemas() -> List[dict]:
+    """The tool schemas to actually expose to the model given current settings."""
+    out = []
+    for t in TOOL_SCHEMAS:
+        gate = _SETTING_GATED.get(t["function"]["name"])
+        if gate and not getattr(settings, gate, True):
+            continue
+        out.append(t)
+    return out
+
 
 _RULE_KEYWORDS = [
     ("command", "command-injection"), ("os command", "command-injection"),
@@ -184,7 +203,7 @@ def dispatch(ctx, name: str, args: dict) -> dict:
             res = _cache(ctx, "codeql", lambda: scanners.run_codeql(root, langs))
             if not res and not scanners.available()["codeql"]:
                 return {"engine": "codeql", "available": False,
-                        "note": "CodeQL 未安装，无法运行深度数据流分析（可降级用 analyze_dataflow）。"}
+                        "note": "CodeQL 未安装，无法运行深度数据流分析（可降级用 check_reachability / cg_dataflow）。"}
             return {"engine": "codeql", "count": len(res), "results": [_slim(c) for c in res[:60]]}
         if name == "secret_scan":
             res = _cache(ctx, "gitleaks", lambda: scanners.run_gitleaks(root))
@@ -192,25 +211,29 @@ def dispatch(ctx, name: str, args: dict) -> dict:
         if name == "dependency_scan":
             res = _cache(ctx, "osv", lambda: scanners.run_osv(root))
             return {"engine": "osv-scanner", "count": len(res), "results": [_slim(c) for c in res[:40]]}
-        if name == "analyze_dataflow":
+        if name == "check_reachability":
+            # merged control-reachability (call graph) + nearby-taint heuristic in one tool.
+            from .. import callgraph
             f = args["file"]
             line = int(args["line"])
-            text = ""
             fp = root / f
-            if fp.exists():
-                text = analysis.read_text(fp)
-            cand = {"rule_id": "adhoc", "location": analysis._loc(root, fp, line, text) if text else
-                    {"file": f, "line": line, "function": None, "snippet": ""},
-                    "_source": None}
-            src, tainted = analysis._nearby_source(root, fp, analysis.EXT_TO_LANG.get(fp.suffix.lower(), ""),
-                                                    line, text.splitlines(), text) if text else (None, False)
-            cand["_source"] = src
+            text = analysis.read_text(fp) if fp.exists() else ""
+            if text:
+                loc = analysis._loc(root, fp, line, text)
+                src, _tainted = analysis._nearby_source(
+                    root, fp, analysis.EXT_TO_LANG.get(fp.suffix.lower(), ""),
+                    line, text.splitlines(), text)
+            else:
+                loc = {"file": f, "line": line, "function": None, "snippet": ""}
+                src = None
+            cand = {"rule_id": "adhoc", "location": loc, "_source": src}
             taint = analysis.taint_trace(root, cand)
-            eps = ctx.state.get("entrypoints") or _cache(ctx, "eps", lambda: analysis.find_entrypoints(root))
-            reach = analysis.reachability_check(root, cand, eps)
-            return {"taint_path": taint["taint_path"], "has_source": taint["has_source"],
-                    "reachability": reach}
-        if name in ("cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path",
+            cg = callgraph.reachable_query(root, f, line, ctx.state.get("entrypoints", []))
+            return {"control_reachability": cg, "has_source": taint["has_source"],
+                    "taint_path": taint["taint_path"],
+                    "note": "control_reachability 来自调用图（可能漏动态派发/框架路由，'不可达'≠安全）；"
+                            "taint_path/has_source 为就近启发式。要证明某 source 确实把污点数据流到某 sink，用 cg_dataflow。"}
+        if name in ("cg_overview", "cg_callers", "cg_callees", "cg_path",
                     "cg_subgraph", "cg_dataflow"):
             from .. import callgraph
             if name == "cg_overview":
@@ -219,9 +242,6 @@ def dispatch(ctx, name: str, args: dict) -> dict:
                 return callgraph.neighbors(root, args.get("target", ""), "callers", int(args.get("offset", 0)))
             if name == "cg_callees":
                 return callgraph.neighbors(root, args.get("target", ""), "callees", int(args.get("offset", 0)))
-            if name == "cg_reachable":
-                return callgraph.reachable_query(root, args.get("file", ""), int(args.get("line", 0)),
-                                                 ctx.state.get("entrypoints", []))
             if name == "cg_subgraph":
                 return callgraph.subgraph(root, args.get("around", ""), int(args.get("radius", 1)))
             if name == "cg_dataflow":
@@ -244,7 +264,7 @@ def _slim(c: dict) -> dict:
             "why": c.get("rationale", "")[:160]}
 
 
-def _record(ctx, args: dict) -> dict:
+def _build_candidate(ctx, args: dict, origin: str, rationale_prefix: str) -> dict:
     file = args["file"]
     line = int(args["line"])
     vt = args["vuln_type"]
@@ -253,23 +273,53 @@ def _record(ctx, args: dict) -> dict:
     text = analysis.read_text(fp) if fp.exists() else ""
     loc = analysis._loc(ctx.root, fp, line, text) if text else {"file": file, "line": line,
                                                                  "function": None, "snippet": ""}
-    cand = {
+    return {
         "rule_id": rid, "vuln_type": vt, "_severity": _sev_for(rid),
-        "origin": "llm", "self_confidence": float(args.get("confidence", 0.55)),
-        "rationale": "LLM 发现：" + args.get("rationale", ""),
+        "origin": origin, "self_confidence": float(args.get("confidence", 0.55)),
+        "rationale": rationale_prefix + args.get("rationale", ""),
         "location": loc, "lang": analysis.EXT_TO_LANG.get(fp.suffix.lower(), "unknown"),
         "_source": None, "_sanitized": False,
     }
-    cands = ctx.state.setdefault("candidates", [])
-    key = (vt, file, line)
+
+
+def _dup(cands, cand) -> bool:
+    key = (cand["vuln_type"], cand["location"]["file"], cand["location"]["line"])
     seen = {(c["vuln_type"], c["location"]["file"], c["location"]["line"]) for c in cands}
-    if key in seen:
+    return key in seen
+
+
+def _record(ctx, args: dict) -> dict:
+    cand = _build_candidate(ctx, args, "llm", "LLM 发现：")
+    cands = ctx.state.setdefault("candidates", [])
+    if _dup(cands, cand):
         return {"ok": True, "duplicate": True}
     cands.append(cand)
     from ..events import emit_threadsafe
     emit_threadsafe(ctx.task_id, "candidate.recorded", {
-        "vuln_type": vt, "location": loc, "self_confidence": cand["self_confidence"], "origin": "llm"})
-    return {"ok": True, "recorded": {"vuln_type": vt, "file": file, "line": line}}
+        "vuln_type": cand["vuln_type"], "location": cand["location"],
+        "self_confidence": cand["self_confidence"], "origin": "llm"})
+    return {"ok": True, "recorded": {"vuln_type": cand["vuln_type"],
+                                     "file": cand["location"]["file"], "line": cand["location"]["line"]}}
+
+
+def record_incidental(ctx, args: dict) -> dict:
+    """A deep-phase agent (Validator / Provisioner-preheat) found a NEW vuln while working
+    on something else. Register it back onto the candidate pool so it gets independently
+    verified too (leverages the shared-state blackboard's iterative-refinement strength).
+    Bounded downstream by the Validator's incidental cap so it can't blow the budget."""
+    cand = _build_candidate(ctx, args, "incidental", "核验期间顺带发现：")
+    cands = ctx.state.setdefault("candidates", [])
+    if _dup(cands, cand):
+        return {"ok": True, "duplicate": True}
+    cands.append(cand)
+    # queue for the Validator to pick up (drained in its verify loop, bounded)
+    ctx.state.setdefault("incidental_pending", []).append(cand)
+    from ..events import emit_threadsafe
+    emit_threadsafe(ctx.task_id, "candidate.recorded", {
+        "vuln_type": cand["vuln_type"], "location": cand["location"],
+        "self_confidence": cand["self_confidence"], "origin": "incidental"})
+    return {"ok": True, "recorded": {"vuln_type": cand["vuln_type"],
+                                     "file": cand["location"]["file"], "line": cand["location"]["line"]}}
 
 
 def _sev_for(rid: str) -> str:

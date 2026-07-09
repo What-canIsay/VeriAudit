@@ -63,86 +63,131 @@ async def run(ctx: AuditContext) -> dict:
     run_id = await ctx.start_agent("validator", "verify")
     budget = ctx.state.get("plan", {}).get("budget", {}) or ctx.state.get("budget", {})
     max_verify = budget.get("max_verify", settings.max_verify)
-    do_dynamic = budget.get("dynamic_verification", False)
-    llm_left = budget.get("llm_triage_limit", settings.llm_triage_limit)
-    agentic_left = budget.get("agentic_verify_limit", settings.agentic_verify_limit)
-    agentic_first = settings.validator_agentic_first
-    limit_on = settings.enable_agentic_verify_limit   # off ⇒ no quota on agentic verify
-    env = ctx.state.get("env")
-    env_ready = bool(env and env.get("ready"))
+    S = {
+        "run_id": run_id,
+        "do_dynamic": budget.get("dynamic_verification", False),
+        "llm_left": budget.get("llm_triage_limit", settings.llm_triage_limit),
+        "agentic_left": budget.get("agentic_verify_limit", settings.agentic_verify_limit),
+        "agentic_first": settings.validator_agentic_first,
+        "limit_on": settings.enable_agentic_verify_limit,   # off ⇒ no quota on agentic verify
+        "env": ctx.state.get("env"),
+        "confirmed": 0, "suspected": 0, "rejected": 0, "dyn": 0,
+        "seen_keys": set(),
+    }
+    S["env_ready"] = bool(S["env"] and S["env"].get("ready"))
 
     cands = sorted(ctx.state.get("candidates", []), key=_priority)
-    confirmed = suspected = rejected = dyn = 0
-    seen_keys = set()
+    # preheat-discovered incidentals are already in `cands` (processed via this snapshot) —
+    # reset the pending queue so they aren't ALSO drained a second time.
+    ctx.state["incidental_pending"] = []
+    # late arrivals (e.g. preheat incidentals) skipped the Tracer → enrich before verifying.
+    for c in cands:
+        if "reachability" not in c:
+            await _enrich_candidate(ctx, c)
 
-    for rank, c in enumerate(cands[:max_verify]):
-        if c.get("reachable") is False:
-            rejected += 1
-            await _persist_rejected(ctx, c, "不可达（无法从对外入口点触达 sink）", seen_keys)
-            await ctx.emit("finding.rejected", {"vuln_type": c["vuln_type"], "location": c["location"]})
-            continue
+    # growable verify queue: incidentals discovered DURING verification get appended and
+    # independently verified in the same loop (bounded by inc_cap so it can't run away).
+    queue = list(cands[:max_verify])
+    inc_cap = max(3, max_verify // 4)
+    inc_used = 0
+    rank = 0
+    while rank < len(queue):
+        await _process_candidate(ctx, queue[rank], rank, S)
+        for nc in ctx.state.pop("incidental_pending", []) or []:
+            if inc_used >= inc_cap:
+                break
+            await _enrich_candidate(ctx, nc)
+            queue.append(nc)
+            inc_used += 1
+        rank += 1
 
-        rule = rule_by_id(c.get("rule_id", ""))
-        deterministic = c.get("rule_id") in _DETERMINISTIC_RULES or c.get("origin") in ("gitleaks", "osv")
-
-        # The agentic Validator reads cross-file context + drives dynamic tools to build a
-        # precise PoC and actually trigger the bug. Two selection strategies (env var):
-        #   agentic-first  → try it for EVERY eligible candidate; fall back to legacy only
-        #                    when it fails to conclude.
-        #   static-first   → legacy judge by default; escalate only for high/critical +
-        #                    reproducible candidates.
-        # AGENTIC_VERIFY_LIMIT bounds token spend in both (candidates are severity-sorted).
-        eligible = (not deterministic and llm.enabled and settings.enable_agentic_verify
-                    and env_ready and (not limit_on or agentic_left > 0))
-        if agentic_first:
-            want_agentic = eligible
-        else:
-            want_agentic = (eligible and rule and rule.get("reproducible")
-                            and c.get("_severity") in ("critical", "high"))
-
-        verdict = dynamic = None
-        if want_agentic:
-            agentic_left -= 1
-            steps = _candidate_steps(ctx, c, rank)
-            await ctx.think(run_id, f"对 {c['vuln_type']} 进行深度核验（预算 {steps} 步）：读全上下文 + 在常驻应用上实弹复现。")
-            verdict, dynamic, ok = await _agentic_verify(ctx, run_id, c, env, steps)
-            if not ok:   # agentic stuck early with no progress → fall back to legacy logic
-                await ctx.think(run_id, f"深度核验未取得进展，回落旧逻辑复核 {c['vuln_type']}。")
-                verdict = dynamic = None
-        if verdict is None:
-            use_llm = llm.enabled and not deterministic and llm_left > 0
-            if use_llm:
-                llm_left -= 1
-            verdict, dynamic = await _legacy_verify(ctx, run_id, c, rule, use_llm, do_dynamic, env, env_ready)
-
-        if verdict["verdict"] == "rejected":
-            rejected += 1
-            await _persist_rejected(ctx, c, verdict.get("confidence_reason", "静态验证判定不成立"), seen_keys)
-            await ctx.emit("finding.rejected", {"vuln_type": c["vuln_type"], "location": c["location"]})
-            continue
-
-        if dynamic:
-            await ctx.emit("sandbox.poc_attempt", {"vuln_type": c["vuln_type"],
-                                                   "attempted": dynamic.get("attempted"),
-                                                   "reproduced": dynamic.get("reproduced")})
-
-        if dynamic and dynamic.get("reproduced"):
-            confidence = "CONFIRMED_DYNAMIC"; confirmed += 1; dyn += 1
-        elif verdict["verdict"] == "confirmed":
-            confidence = "CONFIRMED_STATIC"; confirmed += 1
-        else:
-            confidence = "SUSPECTED"; suspected += 1
-
-        finding = await _persist_finding(ctx, c, verdict, dynamic, confidence, seen_keys)
-        if finding:
-            await ctx.emit("finding.confirmed", {"finding_id": finding["id"], "vuln_type": c["vuln_type"],
-                                                 "confidence": confidence, "severity": finding["severity"],
-                                                 "title": finding["title"]})
-
-    out = {"confirmed": confirmed, "suspected": suspected, "rejected": rejected, "dynamic_reproduced": dyn}
+    out = {"confirmed": S["confirmed"], "suspected": S["suspected"], "rejected": S["rejected"],
+           "dynamic_reproduced": S["dyn"], "incidental": inc_used}
     await ctx.emit("verify.ready", out)
     await ctx.finish_agent(run_id, out)
     return out
+
+
+async def _enrich_candidate(ctx: AuditContext, c: dict) -> None:
+    """Give a candidate that skipped the Tracer (incidental / preheat-found) the same
+    source + heuristic taint + laddered reachability metadata the verify logic expects."""
+    from . import tracer
+    from .. import callgraph
+    if c.get("_source") is None:
+        await asyncio.to_thread(tracer._enrich_source, ctx.root, c)
+    taint = await asyncio.to_thread(analysis.taint_trace, ctx.root, c)
+    reach = await asyncio.to_thread(callgraph.reachability, ctx.root, c, ctx.state.get("entrypoints", []))
+    c["taint"] = taint
+    c["reachability"] = reach
+    c["reachable"] = reach.get("reachable")
+
+
+async def _process_candidate(ctx: AuditContext, c: dict, rank: int, S: dict) -> None:
+    """Verify ONE candidate (agentic → legacy fallback), persist the finding, update S."""
+    run_id = S["run_id"]
+    if c.get("reachable") is False:
+        S["rejected"] += 1
+        await _persist_rejected(ctx, c, "不可达（无法从对外入口点触达 sink）", S["seen_keys"])
+        await ctx.emit("finding.rejected", {"vuln_type": c["vuln_type"], "location": c["location"]})
+        return
+
+    rule = rule_by_id(c.get("rule_id", ""))
+    deterministic = c.get("rule_id") in _DETERMINISTIC_RULES or c.get("origin") in ("gitleaks", "osv")
+
+    # The agentic Validator reads cross-file context + drives dynamic tools to build a
+    # precise PoC and actually trigger the bug. Two selection strategies (env var):
+    #   agentic-first  → try it for EVERY eligible candidate; fall back to legacy only
+    #                    when it fails to conclude.
+    #   static-first   → legacy judge by default; escalate only for high/critical +
+    #                    reproducible candidates.
+    # AGENTIC_VERIFY_LIMIT bounds token spend in both (candidates are severity-sorted).
+    eligible = (not deterministic and llm.enabled and settings.enable_agentic_verify
+                and S["env_ready"] and (not S["limit_on"] or S["agentic_left"] > 0))
+    if S["agentic_first"]:
+        want_agentic = eligible
+    else:
+        want_agentic = (eligible and rule and rule.get("reproducible")
+                        and c.get("_severity") in ("critical", "high"))
+
+    verdict = dynamic = None
+    if want_agentic:
+        S["agentic_left"] -= 1
+        steps = _candidate_steps(ctx, c, rank)
+        await ctx.think(run_id, f"对 {c['vuln_type']} 进行深度核验（预算 {steps} 步）：读全上下文 + 在常驻应用上实弹复现。")
+        verdict, dynamic, ok = await _agentic_verify(ctx, run_id, c, S["env"], steps)
+        if not ok:   # agentic stuck early with no progress → fall back to legacy logic
+            await ctx.think(run_id, f"深度核验未取得进展，回落旧逻辑复核 {c['vuln_type']}。")
+            verdict = dynamic = None
+    if verdict is None:
+        use_llm = llm.enabled and not deterministic and S["llm_left"] > 0
+        if use_llm:
+            S["llm_left"] -= 1
+        verdict, dynamic = await _legacy_verify(ctx, run_id, c, rule, use_llm,
+                                                S["do_dynamic"], S["env"], S["env_ready"])
+
+    if verdict["verdict"] == "rejected":
+        S["rejected"] += 1
+        await _persist_rejected(ctx, c, verdict.get("confidence_reason", "静态验证判定不成立"), S["seen_keys"])
+        await ctx.emit("finding.rejected", {"vuln_type": c["vuln_type"], "location": c["location"]})
+        return
+
+    if dynamic:
+        await ctx.emit("sandbox.poc_attempt", {"vuln_type": c["vuln_type"],
+                                               "attempted": dynamic.get("attempted"),
+                                               "reproduced": dynamic.get("reproduced")})
+
+    if dynamic and dynamic.get("reproduced"):
+        confidence = "CONFIRMED_DYNAMIC"; S["confirmed"] += 1; S["dyn"] += 1
+    elif verdict["verdict"] == "confirmed":
+        confidence = "CONFIRMED_STATIC"; S["confirmed"] += 1
+    else:
+        confidence = "SUSPECTED"; S["suspected"] += 1
+
+    finding = await _persist_finding(ctx, c, verdict, dynamic, confidence, S["seen_keys"])
+    if finding:
+        await ctx.emit("finding.confirmed", {"finding_id": finding["id"], "vuln_type": c["vuln_type"],
+                                             "confidence": confidence, "severity": finding["severity"],
+                                             "title": finding["title"]})
 
 
 async def _legacy_verify(ctx: AuditContext, run_id, c: dict, rule, use_llm: bool,
@@ -381,9 +426,17 @@ def _code_window(root, c, ctx_lines: int = 18) -> str:
 
 
 def _taint_text(c) -> str:
-    hops = (c.get("taint", {}) or {}).get("taint_path", [])
-    return "\n".join(f"  - {h['location'].get('file')}:{h['location'].get('line')} "
-                     f"[{h.get('variable')}] {h.get('transform')}" for h in hops)
+    taint = c.get("taint", {}) or {}
+    hops = taint.get("taint_path", [])
+    lines = [f"  - {h['location'].get('file')}:{h['location'].get('line')} "
+             f"[{h.get('variable')}] {h.get('transform')}" for h in hops]
+    sem = taint.get("semantic")
+    if sem:
+        lines.append(
+            f"  - 【语义污点·{sem.get('engine')}】source→sink 数据流="
+            f"{sem.get('tainted_flow')}（flow_count={sem.get('flow_count')}）"
+            f"—— 由数据流引擎判定，比启发式更强；但'no'可能是漏边，不等于安全。")
+    return "\n".join(lines) if lines else "  - （无污点路径信息）"
 
 
 def rule_poc(c) -> str:

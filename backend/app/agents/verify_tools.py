@@ -5,7 +5,7 @@ truth, follow taint cross-file, inspect auth gates / sanitizers / DB schema) PLU
 dynamic tools that act against the ALREADY-RUNNING provisioned app so it can build a
 PRECISE, project-specific PoC and actually trigger the vulnerability at runtime:
 
-  read      : list_files / read_file / search_code / analyze_dataflow / search_vuln_kb
+  read      : list_files / read_file / search_code / check_reachability / cg_* / search_vuln_kb
   exploit   : http_probe   (fire a crafted request at the standing app; keeps a cookie
                             jar so multi-step auth flows work)
   runtime   : run_command  (shell in the container — sqlmap / nuclei / curl / strace /
@@ -40,7 +40,7 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "pattern": {"type": "string"}, "max": {"type": "integer"}}, "required": ["pattern"]}}},
     {"type": "function", "function": {
-        "name": "analyze_dataflow", "description": "对某处代码做 source→sink 污点追踪与可达性判定。",
+        "name": "check_reachability", "description": "判断某点 (file,line) 是否可被不可信输入触达：一次性综合① 调用图控制可达性（入口→sink 调用链，用于构造精确 PoC）与② 就近污点源/净化启发式。'不可达'≠安全。要证明某 source 确实把污点数据流到某 sink，用 cg_dataflow。",
         "parameters": {"type": "object", "properties": {
             "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
@@ -52,10 +52,6 @@ TOOL_SCHEMAS: List[dict] = [
     {"type": "function", "function": {
         "name": "cg_callees", "description": "查目标函数调用了谁（正向）。",
         "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
-    {"type": "function", "function": {
-        "name": "cg_reachable", "description": "判断 (file,line) 是否能从对外入口经调用链到达，并返回 入口→sink 链，用于确认可达性、构造精确 PoC。",
-        "parameters": {"type": "object", "properties": {
-            "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
     {"type": "function", "function": {
         "name": "cg_path", "description": "查两处代码之间的函数调用链（入口→sink），带调用点行号。",
         "parameters": {"type": "object", "properties": {
@@ -93,6 +89,13 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "action": {"type": "string", "description": "start | read | stop"},
             "mysql_auth": {"type": "string"}}, "required": ["action"]}}},
+    {"type": "function", "function": {
+        "name": "report_incidental", "description": "【核验期间顺带发现一个与当前候选无关的新漏洞时调用】把它登记回候选池，供后续独立验证（不要用它给当前候选下结论——当前候选用 conclude）。发现即报，宁多勿漏，下游有独立验证。",
+        "parameters": {"type": "object", "properties": {
+            "vuln_type": {"type": "string", "description": "如 'CWE-89 SQL Injection'"},
+            "file": {"type": "string"}, "line": {"type": "integer"},
+            "confidence": {"type": "number"}, "rationale": {"type": "string"}},
+            "required": ["vuln_type", "file", "line", "rationale"]}}},
     {"type": "function", "function": {
         "name": "conclude", "description": "【核验完成时调用】给出最终结论：是否成立、是否已动态复现、依据、精确可运行的 PoC、修复建议。",
         "parameters": {"type": "object", "properties": {
@@ -182,8 +185,8 @@ def _sql_log(env: dict, action: str, auth: str) -> dict:
 
 
 def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
-    if name in ("list_files", "read_file", "search_code", "analyze_dataflow", "search_vuln_kb",
-                "cg_overview", "cg_callers", "cg_callees", "cg_reachable", "cg_path",
+    if name in ("list_files", "read_file", "search_code", "check_reachability", "search_vuln_kb",
+                "cg_overview", "cg_callers", "cg_callees", "cg_path",
                 "cg_subgraph", "cg_dataflow"):
         return read_tools.dispatch(ctx, name, args)
 
@@ -203,6 +206,9 @@ def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
 
     if name == "sql_log":
         return _sql_log(env, args.get("action", ""), args.get("mysql_auth", ""))
+
+    if name == "report_incidental":
+        return read_tools.record_incidental(ctx, args)
 
     if name in ("conclude", "preheat_ready"):
         return {"ok": True}   # captured by the caller's on_tool

@@ -26,7 +26,7 @@ async def run(ctx: AuditContext) -> dict:
 
     # pre-build the whole-project cross-procedure call graph so the Hunter can query it
     # on demand (cached; reused by Tracer/Validator). Warn early if it degraded.
-    await ctx.think(run_id, "构建整项目跨过程调用图（供漏洞猎手按需查询：cg_overview/cg_callers/cg_reachable…）。")
+    await ctx.think(run_id, "构建整项目跨过程调用图（供漏洞猎手按需查询：cg_overview/cg_callers/check_reachability…）。")
     cg = await asyncio.to_thread(callgraph.status, ctx.root)
     await ctx.log_tool(run_id, "build_callgraph", {"lang": cg["lang"]},
                        {"engine": cg["engine"], "ideal": cg["ideal"]})
@@ -46,6 +46,8 @@ async def run(ctx: AuditContext) -> dict:
         if j:
             summary = j.get("attack_surface")
 
+    if summary:
+        ctx.state["attack_surface"] = summary   # forwarded to the Hunter (not display-only)
     out = {"languages": profile["languages"], "frameworks": profile["frameworks"],
            "entrypoints": len(entrypoints), "attack_surface": summary}
     await ctx.emit("recon.ready", out)

@@ -595,10 +595,8 @@ def _codeql_dataflow(root: Path, lang: str, from_file: str, from_line: int,
 def _joern_dataflow(root: Path, from_file: str, from_line: int, to_file: str, to_line: int) -> dict:
     ec = _ensure_joern_cpg(root)
     if not ec:
-        res = {"available": False,
-               "note": "数据流引擎不可用（需 Joern + JDK17+）；请用 read_file / analyze_dataflow 人工判断污点。"}
-        _DF_CACHE[key] = res
-        return res
+        return {"available": False,
+                "note": "数据流引擎不可用（需 Joern + JDK17+）；请用 read_file / check_reachability 人工判断污点。"}
     cpg, joern, java, env = ec
     ff, tf = from_file.replace("\\", "/"), to_file.replace("\\", "/")
     cpg_fwd = str(cpg).replace("\\", "/")
