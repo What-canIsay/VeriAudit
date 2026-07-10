@@ -135,6 +135,14 @@ class Settings(BaseSettings):
     enable_dependency_scan: bool = True   # dependency_scan (osv-scanner)
     scanner_timeout_sec: int = 180
 
+    # --- framework-aware audit + logic-class vuln coverage (knowledge_frameworks) ---
+    # framework_guidance: inject the detected framework's security model + logic-vuln checklist
+    #   into the Hunter/Validator so they audit access-control/CSRF/race/business-logic bugs.
+    # logic_heuristics: high-recall structural SEEDS (missing-auth/IDOR/CSRF) the Validator
+    #   then confirms (dynamically, via preheat role sessions) or rejects.
+    enable_framework_guidance: bool = True
+    enable_logic_heuristics: bool = True
+
     # --- RAG semantic code retrieval (app/rag/*) ---
     # Builds a per-project vector index (incremental by file hash); the Hunter/Validator
     # query it with natural language via search_code_semantic. Backend ladder:

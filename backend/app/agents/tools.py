@@ -139,11 +139,28 @@ def active_schemas() -> List[dict]:
 
 
 _RULE_KEYWORDS = [
+    # logic classes first (specific multi-word keys before the broad injection ones; note
+    # CSRF's "request forgery" MUST precede XSS's "cross-site" or it'd be miscategorised).
+    ("idor", "broken-access-control"), ("broken access", "broken-access-control"),
+    ("access control", "broken-access-control"), ("insecure direct object", "broken-access-control"),
+    ("越权", "broken-access-control"), ("horizontal privilege", "broken-access-control"),
+    ("missing auth", "missing-authentication"), ("unauthenticated", "missing-authentication"),
+    ("no authentication", "missing-authentication"), ("missing access control", "missing-authentication"),
+    ("缺失鉴权", "missing-authentication"), ("未鉴权", "missing-authentication"),
+    ("authentication bypass", "auth-bypass"), ("auth bypass", "auth-bypass"),
+    ("authz bypass", "auth-bypass"), ("认证绕过", "auth-bypass"), ("绕过认证", "auth-bypass"),
+    ("csrf", "csrf"), ("request forgery", "csrf"),
+    ("race", "race-condition"), ("toctou", "race-condition"), ("竞态", "race-condition"),
+    ("mass assignment", "mass-assignment"), ("批量赋值", "mass-assignment"),
+    ("business logic", "business-logic"), ("logic flaw", "business-logic"), ("业务逻辑", "business-logic"),
+    ("weak crypto", "weak-crypto"), ("weak hash", "weak-crypto"), ("insecure random", "weak-crypto"),
+    ("weak random", "weak-crypto"), ("弱加密", "weak-crypto"), ("md5", "weak-crypto"), ("sha1", "weak-crypto"),
+    # injection / misc
     ("command", "command-injection"), ("os command", "command-injection"),
     ("sql", "sql-injection"), ("path", "path-traversal"), ("traversal", "path-traversal"),
     ("deserial", "deserialization"), ("ssrf", "ssrf"), ("template", "ssti"),
     ("ssti", "ssti"), ("redirect", "open-redirect"), ("xxe", "xxe"), ("xml external", "xxe"),
-    ("xss", "xss"), ("cross-site", "xss"), ("eval", "code-injection"),
+    ("cross-site scripting", "xss"), ("xss", "xss"), ("cross-site", "xss"), ("eval", "code-injection"),
     ("code injection", "code-injection"), ("secret", "hardcoded-secret"),
     ("credential", "hardcoded-secret"), ("hardcoded", "hardcoded-secret"),
     ("dependency", "vulnerable-dependency"),

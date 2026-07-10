@@ -159,6 +159,8 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `PROVISIONER_CMD_TIMEOUT_SEC` | `240` | 单条搭建命令超时（自适应下限；需构建的项目会自动放大） |
 | `ENABLE_SEMGREP` / `ENABLE_SECRET_SCAN` / `ENABLE_DEPENDENCY_SCAN` | `true` | 专业工具（Semgrep / Gitleaks / OSV）开关 |
 | `ENABLE_CODEQL` | `false` | CodeQL 语义分析扫描（重，深度档；需安装 codeql） |
+| `ENABLE_FRAMEWORK_GUIDANCE` | `true` | **框架感知审计**：把检测到的 Web 框架（Flask/Django/FastAPI/Express/Spring/Rails/Laravel/Gin）的**安全模型**（路由/鉴权/ORM/模板/CSRF）+ **逻辑漏洞排查清单**注入猎手/验证官，让它们据框架真实机制排查**逻辑类漏洞** |
+| `ENABLE_LOGIC_HEURISTICS` | `true` | **逻辑类漏洞结构播种**：框架感知启发式高召回地种下"缺失检查"类候选（**越权/IDOR、缺失鉴权、CSRF**），交验证官**用预热多角色会话实弹确认**（以用户A访问B的资源=IDOR 等）或剪枝；关掉则仅靠 LLM 语义发现 |
 | `ENABLE_CODEQL_CALLGRAPH` | `true` | 调用图精度阶梯之首：CodeQL 精化跨过程调用边(**已实现并验证:python / javascript / typescript**;免构建、精度高)。吃内存(~1.4GB)可能 OOM 降级,机器紧张可设 `false` |
 | `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` | 1400 / 300 | CodeQL 建库/查询的内存上限与超时 |
 | `ENABLE_JOERN_CALLGRAPH` | `true` | 阶梯第二级：Joern 多语言调用图(**已验证:PHP / Go / Python**;Java/JS 前端就绪)。**免构建**——含 Go 等编译型语言直接解析源码,无需编译。需 joern-cli + JDK17+(自动探测 `D:/Tools`);PHP/JS/Go 前端另需 `php`/`node`/`go` |

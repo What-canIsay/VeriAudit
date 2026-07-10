@@ -19,14 +19,22 @@ _KB = None   # {"name": embedder_name, "matrix": ndarray(n,dim), "entries": [dic
 
 
 def _entry_text(r: dict) -> str:
-    return f"{r['name']} {r['cwe']} {r['id']}。利用：{r.get('poc_hint', '')} 修复：{r.get('remediation', '')}"
+    spot = r.get("how_to_spot", "")
+    return (f"{r['name']} {r['cwe']} {r['id']}。" + (f"识别：{spot} " if spot else "")
+            + f"利用：{r.get('poc_hint', '')} 修复：{r.get('remediation', '')}")
 
 
 def _entries() -> list:
+    from .. import knowledge_frameworks
     from ..knowledge import VULN_RULES
-    return [{"id": r["id"], "cwe": r["cwe"], "name": r["name"],
-             "remediation": r["remediation"], "poc_hint": r["poc_hint"],
-             "_text": _entry_text(r)} for r in VULN_RULES]
+    out = [{"id": r["id"], "cwe": r["cwe"], "name": r["name"],
+            "remediation": r["remediation"], "poc_hint": r["poc_hint"],
+            "_text": _entry_text(r)} for r in VULN_RULES]
+    # framework security-model documents (retrievable via search_vuln_kb too)
+    for fe in knowledge_frameworks.kb_entries():
+        out.append({"id": fe["id"], "cwe": "", "name": fe["name"],
+                    "remediation": "", "poc_hint": "", "_text": fe["text"]})
+    return out
 
 
 def _ensure_index(emb) -> dict:

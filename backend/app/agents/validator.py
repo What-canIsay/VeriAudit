@@ -230,10 +230,18 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
     cg_path = reach.get("path")
     cg_line = (f"调用图确认的可达路径（入口→sink）：{' → '.join(h.get('function','?') for h in cg_path)}\n"
                if cg_path else "")
+    # for logic-class candidates, give the model the framework's security model + the
+    # class-specific "how to spot / how to confirm" so it can reproduce access-control bugs.
+    _rule = rule_by_id(c.get("rule_id", "")) or {}
+    fw_note = ""
+    if _rule.get("class") == "logic":
+        fw_note = (f"\n【这是逻辑类漏洞：{_rule.get('how_to_spot', '')}】"
+                   f"确认思路：{_rule.get('poc_hint', '')}\n"
+                   + (ctx.state.get("framework_guidance") or ""))
     user = (f"待核验候选：{c['vuln_type']}\n位置：{sink['file']}:{sink['line']}\n"
             f"来源：{c.get('origin')}  自评置信度：{c.get('self_confidence')}\n"
             f"发现理由：{c.get('rationale', '')}\n污点线索：\n{_taint_text(c)}\n{cg_line}\n"
-            f"sink 附近代码：\n{_code_window(ctx.root, c)}\n\n"
+            f"sink 附近代码：\n{_code_window(ctx.root, c)}\n{fw_note}\n"
             f"应用已在容器内运行（端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
             + reuse +
             f"请深度核验并尽力实弹复现，最后调用 conclude（若你新建了可复用的账号/会话，请在 setup_notes 中说明）。")

@@ -238,6 +238,98 @@ VULN_RULES += [
     },
 ]
 
+# ----------------------------------------------------------------------------
+# Logic-class rules — the "missing check" vulnerabilities (broken access control / IDOR,
+# missing auth, CSRF, race, business logic, mass assignment). These are NOT detectable by a
+# "dangerous sink" regex, so `sinks` is EMPTY (the regex scanner skips them). They are found
+# by the framework-aware Hunter (semantic reasoning) + the logic heuristics, and CONFIRMED
+# dynamically by the Validator using preheat role sessions + http_probe (access-control bugs
+# are perfectly reproducible: log in as user A, try user B's object → IDOR, etc.).
+# `how_to_spot` seeds the model's checklist; `class`/`detection` mark them for the pipeline.
+# ----------------------------------------------------------------------------
+VULN_RULES += [
+    {
+        "id": "broken-access-control", "cwe": "CWE-639", "name": "Broken Access Control / IDOR",
+        "severity": "high", "reproducible": True, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "路由按请求传入的 id 读取/修改对象，却不校验该对象归属当前用户（缺 owner/user_id 过滤）。",
+        "poc_hint": "以用户 A 登录，把 URL/参数里的对象 id 换成用户 B 的 → 若能读到/改到 B 的数据即坐实（用预热的两个角色会话对比）。",
+        "remediation": "对每个按 id 访问的资源强制做归属/权限校验（查询时按 current_user 过滤，或访问后校验 owner）；用集中式授权（Policy/Pundit/@PreAuthorize）。",
+    },
+    {
+        "id": "missing-authentication", "cwe": "CWE-306", "name": "Missing Authentication",
+        "severity": "high", "reproducible": True, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "敏感/状态变更路由的处理函数上没有鉴权守卫（@login_required / Depends(auth) / 中间件 / @PreAuthorize）。",
+        "poc_hint": "不带任何登录态直接请求该端点 → 若返回 2xx 且执行了敏感操作即坐实（用匿名会话 http_probe）。",
+        "remediation": "对所有敏感/写端点强制认证与授权；默认拒绝，白名单放行公开端点。",
+    },
+    {
+        "id": "auth-bypass", "cwe": "CWE-287", "name": "Authentication Bypass",
+        "severity": "critical", "reproducible": True, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "认证逻辑可被绕过：可预测/硬编码 token、用 == 比密码、信任客户端传入的 role/is_admin、JWT 未验签或 alg=none。",
+        "poc_hint": "构造绕过条件（伪造 role 字段 / 空签名 JWT / 已知默认凭据）访问受限资源。",
+        "remediation": "服务端强制校验身份与权限，绝不信任客户端提交的身份/角色；JWT 强制验签、禁 alg=none；用恒定时间比较。",
+    },
+    {
+        "id": "csrf", "cwe": "CWE-352", "name": "Cross-Site Request Forgery",
+        "severity": "medium", "reproducible": True, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "基于 Cookie 会话的状态变更端点没有 CSRF token 校验（框架默认无/被 @csrf_exempt·disable 关闭），且未用 SameSite。",
+        "poc_hint": "构造跨站自动提交的表单/请求（不带 CSRF token）→ 若操作成功即坐实。",
+        "remediation": "对状态变更请求校验 CSRF token（框架内置保护）；Cookie 设 SameSite=Lax/Strict；关键操作二次确认。",
+    },
+    {
+        "id": "race-condition", "cwe": "CWE-362", "name": "Race Condition / TOCTOU",
+        "severity": "medium", "reproducible": True, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:H/A:L",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "对共享状态先检查后动作却无锁/原子性（如查余额→扣款、查库存→下单、限领一次），并发下可被利用。",
+        "poc_hint": "并发发起多个相同请求（并行 http_probe）→ 若出现超额扣减/重复领取即坐实。",
+        "remediation": "用数据库事务 + 行级锁/乐观锁/唯一约束，或原子操作（compare-and-set）替代"
+                       "\"读-判断-写\"，把校验与变更放在同一原子步骤。",
+    },
+    {
+        "id": "business-logic", "cwe": "CWE-840", "name": "Business Logic Flaw",
+        "severity": "medium", "reproducible": False, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:N",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "业务规则可被滥用：负数/超大数量或金额、跳过必要步骤、重复使用一次性凭证、客户端定价、越权状态流转。",
+        "poc_hint": "针对具体业务构造违规输入（负数量、改价格、跳步）验证是否被服务端接受。",
+        "remediation": "在服务端强校验所有业务不变量（范围/符号/状态机/幂等），绝不信任客户端计算的价格/数量/权限。",
+    },
+    {
+        "id": "mass-assignment", "cwe": "CWE-915", "name": "Mass Assignment",
+        "severity": "high", "reproducible": True, "class": "logic", "detection": "semantic",
+        "cvss": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+        "sinks": {}, "sanitizers": {},
+        "how_to_spot": "把整个请求体直接绑定/写回模型（create(request.all()) / 展开 req.body / Bind 结构体），"
+                       "用户可注入不该设的字段（role/is_admin/owner_id/price）。",
+        "poc_hint": "在请求体里附带 is_admin=true / role=admin / owner_id=<自己> → 若被采纳即坐实。",
+        "remediation": "白名单允许写入的字段（strong params / $fillable / DTO 显式字段），绝不整体绑定请求体。",
+    },
+    {
+        "id": "weak-crypto", "cwe": "CWE-327", "name": "Weak / Broken Cryptography",
+        "severity": "medium", "reproducible": False,
+        "cvss": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N",
+        "sinks": {
+            "python": [r"\bhashlib\.(md5|sha1)\s*\(", r"\bDES\b", r"MODE_ECB", r"random\.random\s*\(", r"random\.randint\s*\("],
+            "javascript": [r"createHash\(\s*['\"](md5|sha1)", r"Math\.random\s*\(", r"\bDES\b", r"ECB"],
+            "php": [r"\bmd5\s*\(", r"\bsha1\s*\(", r"MCRYPT_DES", r"ECB", r"\brand\s*\(", r"\bmt_rand\s*\("],
+            "java": [r"MessageDigest\.getInstance\(\s*\"(MD5|SHA-1)", r"DES", r"ECB", r"new\s+Random\s*\("],
+            "go": [r"md5\.", r"sha1\.", r"math/rand"],
+        },
+        "sanitizers": {},
+        "poc_hint": "N/A — 静态判定：安全敏感用途（口令哈希/令牌/加密）使用了弱算法或非密码学随机。",
+        "remediation": "口令用 bcrypt/scrypt/argon2；哈希用 SHA-256+；加密用 AES-GCM（禁 ECB/DES）；令牌用 CSPRNG（secrets/crypto.randomBytes）。",
+    },
+]
+
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 

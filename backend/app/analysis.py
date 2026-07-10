@@ -206,6 +206,113 @@ def _make_candidate(root: Path, p: Path, lang: str, rule: dict, line: int,
     }
 
 
+# --------------------------------------------------------------------------- #
+# Framework-aware LOGIC-vuln heuristics (missing-auth / IDOR / CSRF).
+# These "missing check" bugs have no dangerous-sink regex, so we detect them structurally
+# using each framework's markers (knowledge_frameworks): a state-changing route with no auth
+# marker in its body/file → missing-auth seed; an object-fetch-by-id with no ownership marker
+# nearby → IDOR seed; a state-changing route in a CSRF-default-off framework with no CSRF
+# marker → CSRF seed. Deliberately HIGH-RECALL / low-confidence — the Validator prunes them.
+# --------------------------------------------------------------------------- #
+_CSRF_DEFAULT_OFF = {"flask", "fastapi", "express", "gin"}
+
+
+def _any_re(pats, text: str) -> bool:
+    for p in pats or ():
+        try:
+            if re.search(p, text):
+                return True
+        except re.error:
+            pass
+    return False
+
+
+def _merge_markers(records: List[dict]) -> dict:
+    keys = ("route", "method_post", "auth", "object_by_id", "ownership", "csrf")
+    out = {k: [] for k in keys}
+    for r in records:
+        for k in keys:
+            out[k] += r.get("markers", {}).get(k, [])
+    return out
+
+
+def _enclosing_handler(lines: List[str], i: int, route_pats, max_span: int = 60) -> str:
+    """Text of the route-handler enclosing 1-indexed line `i`, bounded by the surrounding
+    route declarations so a marker in the NEXT handler can't leak in (that was suppressing
+    real seeds). Includes a couple of decorator lines above the handler's route line."""
+    n = len(lines)
+    s = i - 1                                   # 0-indexed line i
+    steps = 0
+    while s > 0 and steps < max_span and not _any_re(route_pats, lines[s]):
+        s -= 1; steps += 1
+    start = max(0, s - 2)                        # a few decorator lines above the route
+    e = i                                        # scan down to the NEXT handler's route line
+    steps = 0
+    while e < n and steps < max_span and not _any_re(route_pats, lines[e]):
+        e += 1; steps += 1
+    return "\n".join(lines[start:e])
+
+
+def scan_logic_candidates(root: Path, frameworks: List[str], cap: int = 40) -> List[dict]:
+    from .knowledge_frameworks import FRAMEWORKS, _ALIASES
+    recs = []
+    for fw in frameworks or []:
+        key = _ALIASES.get((fw or "").lower(), (fw or "").lower())
+        if key in FRAMEWORKS and FRAMEWORKS[key] not in recs:
+            recs.append(FRAMEWORKS[key])
+    if not recs:
+        return []
+    out: List[dict] = []
+    for p, lang in iter_source_files(root):
+        fw = [r for r in recs if r["language"] == lang]
+        if not fw:
+            continue
+        text = read_text(p)
+        if not text:
+            continue
+        lines = text.splitlines()
+        m = _merge_markers(fw)
+        file_csrf = _any_re(m["csrf"], text)   # CSRF setup is usually app/file-level
+        csrf_off = any((r["name"].split()[0].lower() in _CSRF_DEFAULT_OFF) for r in fw)
+        for i, line in enumerate(lines, 1):
+            if _any_re(m["method_post"], line):                 # state-changing route
+                window = _enclosing_handler(lines, i, m["route"])
+                if not _any_re(m["auth"], window):
+                    out.append(_logic_cand(root, p, lang, "missing-authentication", i, lines, text,
+                                           "状态变更路由未见鉴权守卫（该处理器内无 auth 标记）"))
+                if csrf_off and not (file_csrf or _any_re(m["csrf"], window)):
+                    out.append(_logic_cand(root, p, lang, "csrf", i, lines, text,
+                                           "状态变更路由；该框架默认无 CSRF 且未见 CSRF 校验"))
+            if _any_re(m["object_by_id"], line):                # fetch object by request id
+                window = _enclosing_handler(lines, i, m["route"])
+                if not _any_re(m["ownership"], window):
+                    out.append(_logic_cand(root, p, lang, "broken-access-control", i, lines, text,
+                                           "按 id 取对象但该处理器内未见归属/所有权校验（疑似 IDOR）"))
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def _logic_cand(root: Path, p: Path, lang: str, rule_id: str, line: int,
+                lines: List[str], text: str, why: str) -> dict:
+    from .knowledge import rule_by_id
+    rule = rule_by_id(rule_id) or {}
+    loc = _loc(root, p, line, text)
+    src_loc, _tainted = _nearby_source(root, p, lang, line, lines, text)
+    return {
+        "rule_id": rule_id,
+        "vuln_type": f"{rule.get('cwe', '')} {rule.get('name', rule_id)}",
+        "_severity": rule.get("severity", "medium"),
+        "origin": "logic-heuristic",
+        "self_confidence": 0.35,   # low: a high-recall seed the Validator confirms/rejects
+        "rationale": f"框架感知启发式：{why}（低置信度种子，待验证官核实）。",
+        "location": loc,
+        "lang": lang,
+        "_source": src_loc,
+        "_sanitized": False,
+    }
+
+
 def _nearby_source(root: Path, p: Path, lang: str, sink_line: int,
                    lines: List[str], text: str) -> Tuple[Optional[dict], bool]:
     pats = SOURCES.get(lang, [])

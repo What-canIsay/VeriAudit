@@ -40,6 +40,16 @@ async def run(ctx: AuditContext) -> dict:
         pool = await asyncio.to_thread(_deterministic_pool, ctx)
         _merge(ctx.state.setdefault("candidates", []), pool)
 
+    # framework-aware LOGIC-vuln seeds (missing-auth / IDOR / CSRF) — added in BOTH modes to
+    # complement the LLM's semantic findings with high-recall structural seeds (deduped; the
+    # Validator prunes false positives). Only fires when a supported framework is detected.
+    if getattr(settings, "enable_logic_heuristics", True):
+        fws = (ctx.state.get("profile", {}) or {}).get("frameworks", [])
+        seeds = await asyncio.to_thread(analysis.scan_logic_candidates, ctx.root, fws)
+        if seeds:
+            _merge(ctx.state.setdefault("candidates", []), seeds)
+            await ctx.think(run_id, f"框架感知启发式补充 {len(seeds)} 个逻辑类候选（越权/缺失鉴权/CSRF，低置信度，待验证）。")
+
     cands = ctx.state.get("candidates", [])[:cap]
     ctx.state["candidates"] = cands
 
@@ -110,6 +120,9 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
                      f"任何其它可疑点都要一并挖掘并 report_candidate——切勿只盯着上面几点而漏掉别处（宁多勿漏，漏报比误报更严重）。\n")
     if attack_surface:
         guidance += f"【侦察员研判的攻击面（参考）】{attack_surface}\n"
+    fw_guidance = ctx.state.get("framework_guidance")
+    if fw_guidance:
+        guidance += fw_guidance   # framework security model + logic-class checklist
     guidance += _rag_status_line(ctx)
     user = (f"项目语言分布：{langs}；已识别对外入口点 {len(eps)} 个。"
             f"部分入口文件：{top}。\n"

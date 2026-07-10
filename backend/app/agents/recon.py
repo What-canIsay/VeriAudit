@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
-from .. import analysis, callgraph, rag
+from .. import analysis, callgraph, knowledge_frameworks, rag
+from ..config import settings
 from ..llm.gateway import llm
 from . import prompts
 from .context import AuditContext
@@ -23,6 +24,16 @@ async def run(ctx: AuditContext) -> dict:
 
     ctx.state["profile"] = profile
     ctx.state["entrypoints"] = entrypoints
+
+    # attach each detected web framework's SECURITY MODEL (routing/auth/ORM/templating/CSRF +
+    # logic-vuln checklist) so the Hunter/Validator audit logic-class bugs with real knowledge.
+    if getattr(settings, "enable_framework_guidance", True):
+        records = knowledge_frameworks.for_names(profile.get("frameworks", []), profile.get("languages", {}))
+        if records:
+            ctx.state["framework_records"] = records
+            ctx.state["framework_guidance"] = knowledge_frameworks.guidance_block(records)
+            await ctx.log_tool(run_id, "framework_profile", {},
+                               {"frameworks": [r["name"] for r in records]})
 
     # pre-build the whole-project cross-procedure call graph so the Hunter can query it
     # on demand (cached; reused by Tracer/Validator). Warn early if it degraded.
