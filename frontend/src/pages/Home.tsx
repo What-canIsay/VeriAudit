@@ -4,6 +4,13 @@ import { api } from "../api";
 import type { Project } from "../types";
 import { relTime } from "../lib/format";
 import { VA_CSS } from "../lib/vaTheme";
+import { motion } from "../lib/motion";
+
+const rise = (delay: number) => ({
+  initial: { opacity: 0, y: 12 },
+  animate: { opacity: 1, y: 0 },
+  transition: { duration: 0.55, delay, ease: [0.22, 1, 0.36, 1] as const },
+});
 
 // Home — the instrument nameplate. Graph-paper field, a widely-tracked wordmark, the
 // signature source→sink trace, two actions, and a low readout of live capability + last run.
@@ -52,20 +59,21 @@ export default function Home() {
       </header>
 
       <main className="va-hero">
-        <h1 className="va-mark">VERIAUDIT</h1>
-        <Trace />
-        <p className="va-tag">从发现到复现，每个漏洞都可追溯</p>
-        <div className="va-actions">
-          <button className="va-btn va-btn-solid" onClick={() => nav("/history?new=1")}>
+        <motion.h1 className="va-mark" {...rise(0.05)}>VERIAUDIT</motion.h1>
+        <motion.div {...rise(0.35)}><Trace /></motion.div>
+        <motion.p className="va-tag" {...rise(0.6)}>从发现到复现，每个漏洞都可追溯</motion.p>
+        <motion.div className="va-actions" {...rise(0.78)}>
+          <motion.button className="va-btn va-btn-solid" whileTap={{ scale: 0.97 }} onClick={() => nav("/history?new=1")}>
             新建项目 <span className="va-arrow">→</span>
-          </button>
-          <button className="va-btn va-btn-line" onClick={() => nav("/history")}>
+          </motion.button>
+          <motion.button className="va-btn va-btn-line" whileTap={{ scale: 0.97 }} onClick={() => nav("/history")}>
             审计历史
-          </button>
-        </div>
+          </motion.button>
+        </motion.div>
       </main>
 
-      <footer className="va-readout">
+      <motion.footer className="va-readout" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+        transition={{ duration: 0.6, delay: 1 }}>
         <div className="va-read-left">
           <div className="va-read-row">
             <span className="va-read-label">能力读数</span>
@@ -101,7 +109,7 @@ export default function Home() {
             <div className="va-dim">暂无审计记录</div>
           )}
         </div>
-      </footer>
+      </motion.footer>
     </div>
   );
 }

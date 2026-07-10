@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { AnimatePresence } from "framer-motion";
 import { api } from "../api";
 import type { Finding, Task } from "../types";
 import { useTaskEvents, timelineToEvents, type LiveEvent } from "../lib/useTaskEvents";
 import { fmtElapsed, parseTs } from "../lib/format";
 import { VA_CSS, STATUS_LABEL, sevClass, CONF_LABEL } from "../lib/vaTheme";
+import { AnimatedNumber, motion, drawerV, popV, maskV } from "../lib/motion";
 
 const PHASES = ["assess", "plan", "recon", "hunt", "trace", "provision", "verify", "report"];
 const PHASE_LABEL: Record<string, string> = {
@@ -159,6 +161,10 @@ export default function TaskConsole() {
       {/* phase stepper */}
       <div className="va-steps">
         <div className="va-steps-line" />
+        <motion.div className="va-steps-fill"
+          initial={{ scaleX: 0 }}
+          animate={{ scaleX: liveStatus === "succeeded" ? 1 : Math.max(0, PHASES.indexOf(curPhase)) / (PHASES.length - 1) }}
+          transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }} />
         {PHASES.map((p, i) => {
           const done = PHASES.indexOf(curPhase) > i || liveStatus === "succeeded";
           const active = curPhase === p && !["succeeded", "failed", "cancelled"].includes(liveStatus);
@@ -228,8 +234,12 @@ export default function TaskConsole() {
         <div className="va-failbar va-mono">审计失败：{task?.error}</div>
       )}
 
-      {selected && <FindingDrawer f={selected} onClose={() => setSelected(null)} />}
-      {reportOpen && id && <ReportSheet taskId={id} onClose={() => setReportOpen(false)} />}
+      <AnimatePresence>
+        {selected && <FindingDrawer key="drawer" f={selected} onClose={() => setSelected(null)} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {reportOpen && id && <ReportSheet key="report" taskId={id} onClose={() => setReportOpen(false)} />}
+      </AnimatePresence>
     </div>
   );
 }
@@ -238,7 +248,7 @@ export default function TaskConsole() {
 function Stat({ n, label, tone, last }: { n: number; label: string; tone: string; last?: boolean }) {
   return (
     <div className={`va-stat ${last ? "last" : ""}`}>
-      <div className={`va-stat-n ${tone}`}>{n}</div>
+      <div className={`va-stat-n ${tone}`}><AnimatedNumber value={n} /></div>
       <div className="va-stat-l">{label}</div>
     </div>
   );
@@ -423,7 +433,9 @@ function FindingRow({ f, onClick }: { f: Finding; onClick: () => void }) {
   const conf = CONF_LABEL[f.confidence] || "疑似";
   const confOk = f.confidence === "CONFIRMED_DYNAMIC";
   return (
-    <button className="va-fr" onClick={onClick}>
+    <motion.button className="va-fr" onClick={onClick}
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}>
       <span className={`va-fr-dot ${s.dot}`} />
       <span className="va-fr-main">
         <span className="va-fr-title">{f.title}</span>
@@ -432,7 +444,7 @@ function FindingRow({ f, onClick }: { f: Finding; onClick: () => void }) {
       {typeof f.severity?.score === "number" && <span className="va-fr-score va-mono">{f.severity.score.toFixed(1)}</span>}
       <span className={`va-fr-sev va-mono ${s.text}`}>{s.label}</span>
       <span className={`va-fr-act va-mono ${confOk ? "va-ok" : "va-dim"}`}>{conf}</span>
-    </button>
+    </motion.button>
   );
 }
 
@@ -449,8 +461,8 @@ function FindingDrawer({ f, onClose }: { f: Finding; onClose: () => void }) {
 
   return (
     <>
-      <div className="va-mask" onClick={onClose} />
-      <aside className="va-drawer va-fade">
+      <motion.div className="va-mask" variants={maskV} initial="hidden" animate="show" exit="exit" onClick={onClose} />
+      <motion.aside className="va-drawer" variants={drawerV} initial="hidden" animate="show" exit="exit">
         <div className="va-dr-head">
           <div className="va-dr-title-wrap">
             <h2 className="va-dr-title">{f.title}</h2>
@@ -542,7 +554,7 @@ function FindingDrawer({ f, onClose }: { f: Finding; onClose: () => void }) {
             </div>
           )}
         </div>
-      </aside>
+      </motion.aside>
     </>
   );
 }
@@ -570,9 +582,9 @@ function ReportSheet({ taskId, onClose }: { taskId: string; onClose: () => void 
   }
   return (
     <>
-      <div className="va-mask" onClick={onClose} />
-      <div className="va-modal va-fade">
-        <div className="va-card va-report">
+      <motion.div className="va-mask" variants={maskV} initial="hidden" animate="show" exit="exit" onClick={onClose} />
+      <div className="va-modal">
+        <motion.div className="va-card va-report" variants={popV} initial="hidden" animate="show" exit="exit">
           <div className="va-report-head">
             <div>
               <div className="va-label">报告导出</div>
@@ -591,7 +603,7 @@ function ReportSheet({ taskId, onClose }: { taskId: string; onClose: () => void 
               </div>
             ))}
           </div>
-        </div>
+        </motion.div>
       </div>
     </>
   );
@@ -648,6 +660,7 @@ const CSS = `
 .va-steps { position:relative; flex:0 0 auto; display:flex; justify-content:space-between;
   padding:20px clamp(24px,5vw,64px) 16px; background:var(--panel); border-bottom:1px solid var(--hair); }
 .va-steps-line { position:absolute; left:clamp(40px,7vw,90px); right:clamp(40px,7vw,90px); top:26px; height:2px; background:var(--hair); }
+.va-steps-fill { position:absolute; left:clamp(40px,7vw,90px); right:clamp(40px,7vw,90px); top:26px; height:2px; background:var(--signal); transform-origin:left center; }
 .va-step { position:relative; display:flex; flex-direction:column; align-items:center; gap:9px; z-index:1; }
 .va-step-node { width:12px; height:12px; border-radius:50%; background:#fff; border:2px solid var(--hair); }
 .va-step-node.done { background:var(--signal); border-color:var(--signal); }

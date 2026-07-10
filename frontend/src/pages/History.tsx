@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { AnimatePresence } from "framer-motion";
 import { api } from "../api";
 import type { Project, Task } from "../types";
 import { fmtElapsed, parseTs } from "../lib/format";
 import { VA_CSS, STATUS_LABEL, sevClass } from "../lib/vaTheme";
+import { motion, popV, maskV } from "../lib/motion";
 
 const PHASES = ["assess", "plan", "recon", "hunt", "trace", "provision", "verify", "report"];
 
@@ -70,8 +72,8 @@ export default function History() {
           )}
 
           <div className="va-cards">
-            {projects.map((p) => (
-              <ProjectCard key={p.id} p={p} cfg={cfg} nav={nav}
+            {projects.map((p, i) => (
+              <ProjectCard key={p.id} index={i} p={p} cfg={cfg} nav={nav}
                 onControl={control} onEdit={() => setModal({ mode: "edit", id: p.id })}
                 onErr={setErr} reload={load} />
             ))}
@@ -79,15 +81,17 @@ export default function History() {
         </div>
       </div>
 
-      {modal && (
-        <ProjectModal mode={modal.mode} id={modal.id} cfg={cfg} projects={projects}
-          onClose={() => setModal(null)} onDone={load} nav={nav} />
-      )}
+      <AnimatePresence>
+        {modal && (
+          <ProjectModal key="modal" mode={modal.mode} id={modal.id} cfg={cfg} projects={projects}
+            onClose={() => setModal(null)} onDone={load} nav={nav} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function ProjectCard({ p, cfg, nav, onControl, onEdit, onErr, reload }: any) {
+function ProjectCard({ p, index, cfg, nav, onControl, onEdit, onErr, reload }: any) {
   const tasks: Task[] = p.tasks || [];
   const files = Object.values(p.languages || {}).reduce((a: number, b: any) => a + (Number(b) || 0), 0);
   const primary = Object.entries(p.languages || {}).sort((a: any, b: any) => b[1] - a[1])[0]?.[0];
@@ -112,7 +116,9 @@ function ProjectCard({ p, cfg, nav, onControl, onEdit, onErr, reload }: any) {
   }
 
   return (
-    <section className="va-card va-proj">
+    <motion.section className="va-card va-proj"
+      initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay: Math.min(index || 0, 8) * 0.06, ease: [0.22, 1, 0.36, 1] }}>
       <div className="va-proj-head">
         <div className="va-proj-id">
           <button className="va-proj-name" onClick={onEdit} title="编辑项目">{p.name}</button>
@@ -151,7 +157,7 @@ function ProjectCard({ p, cfg, nav, onControl, onEdit, onErr, reload }: any) {
           {busy ? "启动中…" : "开始审计"} {!busy && <span className="va-arrow">→</span>}
         </button>
       </div>
-    </section>
+    </motion.section>
   );
 }
 
@@ -243,9 +249,9 @@ function ProjectModal({ mode, id, cfg, projects, onClose, onDone, nav }: any) {
 
   return (
     <>
-      <div className="va-mask" onClick={onClose} />
-      <div className="va-modal va-fade">
-        <form className="va-card va-modal-card" onSubmit={submit}>
+      <motion.div className="va-mask" variants={maskV} initial="hidden" animate="show" exit="exit" onClick={onClose} />
+      <div className="va-modal">
+        <motion.form className="va-card va-modal-card" variants={popV} initial="hidden" animate="show" exit="exit" onSubmit={submit}>
           <div className="va-modal-head">
             <span className="va-modal-title">{mode === "edit" ? "编辑项目" : "新建项目"}</span>
             <button type="button" className="va-x" onClick={onClose}>✕</button>
@@ -292,7 +298,7 @@ function ProjectModal({ mode, id, cfg, projects, onClose, onDone, nav }: any) {
               {busy ? "处理中…" : mode === "edit" ? "保存" : "创建并开始"}
             </button>
           </div>
-        </form>
+        </motion.form>
       </div>
     </>
   );
