@@ -32,6 +32,8 @@ def get_config():
                         "cheap": settings.model_cheap},
         "sandbox_available": docker_available(),
         "scanners": _scanners_available(),
+        "callgraph": _callgraph_available(),
+        "rag_available": _rag_available(),
         "sample_path": str(sample) if sample.exists() else None,
     }
 
@@ -39,6 +41,27 @@ def get_config():
 def _scanners_available():
     from .. import scanners
     return scanners.available()
+
+
+def _callgraph_available():
+    """Which call-graph engines are actually usable right now (for taint precision)."""
+    import shutil
+    codeql = bool(shutil.which("codeql"))
+    joern = False
+    try:
+        from .. import callgraph
+        if settings.enable_joern_callgraph:
+            j, java = callgraph._joern_paths()
+            joern = bool(j and java)
+    except Exception:
+        joern = False
+    return {"codeql": codeql, "joern": joern}
+
+
+def _rag_available():
+    """RAG semantic retrieval — on when enabled (an embedding backend always resolves, since
+    the lexical hashing embedder is a guaranteed offline fallback)."""
+    return bool(settings.enable_rag)
 
 
 # --------------------------- projects --------------------------- #

@@ -1,26 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import {
-  ArrowLeft, Activity, FileText, X, ChevronRight, Loader2, CheckCircle2, AlertTriangle,
-  Pause, Play, Square, Clock,
-} from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type { Finding, Task } from "../types";
 import { useTaskEvents, timelineToEvents, type LiveEvent } from "../lib/useTaskEvents";
-import Timeline from "../components/Timeline";
-import EvidenceChain from "../components/EvidenceChain";
-import { StatCard, SeverityBar } from "../components/StatCard";
-import { SeverityBadge, ConfidenceBadge } from "../components/Badge";
-import ReportModal from "../components/ReportModal";
+import { fmtElapsed, parseTs } from "../lib/format";
+import { VA_CSS, STATUS_LABEL, sevClass, CONF_LABEL } from "../lib/vaTheme";
 
 const PHASES = ["assess", "plan", "recon", "hunt", "trace", "provision", "verify", "report"];
 const PHASE_LABEL: Record<string, string> = {
   assess: "评估", plan: "规划", recon: "侦察", hunt: "发现", trace: "追踪",
   provision: "搭建", verify: "验证", report: "报告",
 };
+const AGENT_COLOR: Record<string, string> = {
+  profiler: "#0E7C9B", planner: "#6D5BD0", recon: "#2E7CC4", hunter: "#C16A22",
+  tracer: "#2C8C8C", provisioner: "#C16A22", validator: "#0B8A63", reporter: "#B5487B",
+  system: "#5C6560",
+};
 
 export default function TaskConsole() {
   const { id } = useParams();
+  const nav = useNavigate();
   const [task, setTask] = useState<Task | null>(null);
   const [live, setLive] = useState<boolean | undefined>(undefined);
   const [histEvents, setHistEvents] = useState<LiveEvent[]>([]);
@@ -33,19 +32,16 @@ export default function TaskConsole() {
   const [nowMs, setNowMs] = useState(Date.now());
   const [busy, setBusy] = useState(false);
 
-  // Pull the CURRENT findings straight from the DB (not just via live events). This is what
-  // surfaces findings confirmed BEFORE the console connected — those `finding.confirmed`
-  // events may have been evicted from the bounded SSE history, so we can't rely on them alone.
+  // Pull current findings straight from the DB (not only via live events): surfaces findings
+  // confirmed BEFORE the console connected, whose events may be evicted from the bounded SSE log.
   const inFlight = useRef(false);
   const refreshFindings = useCallback(() => {
-    if (!id || inFlight.current) return;   // skip if a fetch is still pending (avoid pileup)
+    if (!id || inFlight.current) return;
     inFlight.current = true;
     Promise.allSettled([
       api.findings(id).then(setFindings),
       api.findings(id, "REJECTED").then((r) => setRejectedCount(r.length)),
-    ]).finally(() => {
-      inFlight.current = false;
-    });
+    ]).finally(() => { inFlight.current = false; });
   }, [id]);
 
   useEffect(() => {
@@ -55,39 +51,28 @@ export default function TaskConsole() {
       setTask(t);
       const done = ["succeeded", "failed", "cancelled"].includes(t.status);
       setLive(!done);
-      refreshFindings();   // fetch existing findings for BOTH running and finished tasks
-      if (done) {
-        api.timeline(id).then((items) => setHistEvents(timelineToEvents(items))).catch(() => {});
-      }
+      refreshFindings();
+      if (done) api.timeline(id).then((items) => setHistEvents(timelineToEvents(items))).catch(() => {});
     });
   }, [id, refreshFindings]);
 
-  // event-driven refresh (fast path when a new finding is confirmed live)
   useEffect(() => {
     if (!id || live === false) return;
     if (findingIds.length > 0 || finished) refreshFindings();
   }, [id, live, findingIds.length, finished, refreshFindings]);
 
-  // poll while the task is live, so findings appear even if their confirmation event was
-  // missed (SSE history is bounded / reconnects lose old events).
   useEffect(() => {
     if (!id || live === false || finished) return;
     const t = setInterval(refreshFindings, 6000);
     return () => clearInterval(t);
   }, [id, live, finished, refreshFindings]);
 
-  // when a live task finishes, refetch it once so finished_at freezes the elapsed timer.
   useEffect(() => {
     if (id && finished) api.getTask(id).then(setTask).catch(() => {});
   }, [id, finished]);
 
-  // elapsed timer: ticks every second from started_at, freezes when the task ends.
-  // parseTs treats the timestamps as UTC (the backend serializes naive UTC WITHOUT an
-  // offset; without this the browser adds its local offset → the timer starts at e.g. 8:00:00).
   const startedMs = parseTs(task?.started_at);
   const finishedMs = parseTs(task?.finished_at);
-  // terminal = the task has ended (from the SSE finished flag OR a terminal status), so the
-  // timer freezes even if the post-finish finished_at refetch hasn't landed / was blocked.
   const terminal = finished || ["succeeded", "failed", "cancelled"].includes(task?.status || "");
   useEffect(() => {
     if (terminal || startedMs == null) return;
@@ -101,27 +86,18 @@ export default function TaskConsole() {
     setBusy(true);
     try {
       const fn = action === "pause" ? api.pauseTask : action === "resume" ? api.resumeTask : api.cancelTask;
-      setTask(await fn(id));   // optimistic; SSE task.status will confirm
-    } catch {
-      /* ignore — SSE reflects the true state */
-    } finally {
-      setBusy(false);
-    }
+      setTask(await fn(id));
+    } catch { /* SSE reflects true state */ }
+    finally { setBusy(false); }
   }
-
   async function openFinding(fid: string) {
-    const full = await api.finding(fid);
-    setSelected(full);
+    setSelected(await api.finding(fid));
   }
 
-  // finished task (revisit): drive from persisted DB state; live task: from SSE.
   const events = live === false ? histEvents : liveEvents;
   const liveStatus = live === false ? (task?.status || "succeeded") : (status || task?.status || "running");
   const curPhase = live === false ? "report" : (phase || task?.phase || "plan");
 
-  // While the task is RUNNING its DB counts aren't populated yet (reporter writes them at the
-  // end), so derive live counts from the fetched findings + rejected count. Once finished, use
-  // the authoritative counts (SSE task.finished / refetched task.counts).
   const derivedCounts = useMemo(() => {
     const by_severity: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
     let cd = 0, cs = 0, sus = 0;
@@ -137,14 +113,11 @@ export default function TaskConsole() {
   }, [findings, rejectedCount]);
 
   const isLiveRunning = live !== false && !finished;
-  const counts = isLiveRunning
-    ? derivedCounts
+  const counts: any = isLiveRunning ? derivedCounts
     : (live === false ? (task?.counts || {}) : (Object.keys(sseCounts).length ? sseCounts : task?.counts || {}));
   const bys = counts.by_severity || {};
 
-  // capability degradations (fallbacks) — dedup, so the user is never misled into
-  // thinking the system is running at max capability when it isn't.
-  const notices = (() => {
+  const notices = useMemo(() => {
     const seen = new Set<string>(); const out: any[] = [];
     for (const e of events) {
       if (e.event !== "degradation.notice") continue;
@@ -152,221 +125,581 @@ export default function TaskConsole() {
       if (seen.has(k)) continue; seen.add(k); out.push(e.data);
     }
     return out;
-  })();
+  }, [events]);
+
+  const canReport = finished || liveStatus === "succeeded";
+  const idShort = id ? id.slice(0, 8) : "";
 
   return (
-    <div className="flex flex-col h-dvh">
+    <div className="va va-con">
+      <style>{VA_CSS + CSS}</style>
+
       {/* header */}
-      <header className="h-16 border-b border-border flex items-center justify-between px-6 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <Link to="/" className="btn-ghost px-2"><ArrowLeft className="w-4 h-4" /></Link>
-          <div className="min-w-0">
-            <h1 className="text-base font-semibold flex items-center gap-2">
-              审计控制台
-              <StatusPill status={liveStatus} />
-            </h1>
-            <div className="text-xs text-faint font-mono truncate">task {id}</div>
-          </div>
+      <header className="va-top">
+        <div className="va-top-l">
+          <button className="va-back va-mark-sm" onClick={() => nav("/history")}>← VERIAUDIT</button>
+          <span className="va-task-id va-mono">task {idShort}…</span>
+          <StatusPill status={liveStatus} />
+          {startedMs != null && <span className="va-elapsed va-mono">{fmtElapsed(elapsedMs)}</span>}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {/* elapsed timer */}
-          {startedMs && (
-            <span className="chip text-muted border-border font-mono tabular-nums" title="审计已运行时长">
-              <Clock className="w-3.5 h-3.5" /> {fmtElapsed(elapsedMs)}
-            </span>
-          )}
-          {/* run controls */}
-          {liveStatus === "running" && (
-            <>
-              <button className="btn-outline" disabled={busy} onClick={() => doControl("pause")}>
-                <Pause className="w-4 h-4" /> 暂停
-              </button>
-              <button className="btn-outline text-critical border-critical/40 hover:bg-critical/10"
-                disabled={busy} onClick={() => doControl("cancel")}>
-                <Square className="w-4 h-4" /> 停止
-              </button>
-            </>
-          )}
-          {liveStatus === "paused" && (
-            <>
-              <button className="btn-primary" disabled={busy} onClick={() => doControl("resume")}>
-                <Play className="w-4 h-4" /> 继续
-              </button>
-              <button className="btn-outline text-critical border-critical/40 hover:bg-critical/10"
-                disabled={busy} onClick={() => doControl("cancel")}>
-                <Square className="w-4 h-4" /> 停止
-              </button>
-            </>
-          )}
-          {liveStatus === "cancelling" && (
-            <span className="chip text-amber-300 border-amber-500/40 bg-amber-500/10">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> 停止中…
-            </span>
-          )}
-          <button className="btn-outline" onClick={() => setReportOpen(true)} disabled={!finished && liveStatus !== "succeeded"}>
-            <FileText className="w-4 h-4" /> 审计报告
+        <div className="va-top-r">
+          {liveStatus === "cancelling" && <span className="va-chip va-pulse">停止中…</span>}
+          <button className="va-iconbtn" title={liveStatus === "paused" ? "继续" : "暂停"}
+            disabled={busy || !["running", "paused"].includes(liveStatus)}
+            onClick={() => doControl(liveStatus === "paused" ? "resume" : "pause")}>
+            {liveStatus === "paused" ? "▶" : "❚❚"}
           </button>
+          <button className="va-iconbtn" title="停止"
+            disabled={busy || !["running", "paused"].includes(liveStatus)}
+            onClick={() => doControl("cancel")}>■</button>
+          <button className="va-btn va-btn-line va-btn-sm" disabled={!canReport} onClick={() => setReportOpen(true)}>报告</button>
         </div>
       </header>
 
       {/* phase stepper */}
-      <div className="px-6 py-3 border-b border-border flex items-center gap-1 shrink-0 overflow-x-auto">
+      <div className="va-steps">
+        <div className="va-steps-line" />
         {PHASES.map((p, i) => {
           const done = PHASES.indexOf(curPhase) > i || liveStatus === "succeeded";
           const active = curPhase === p && !["succeeded", "failed", "cancelled"].includes(liveStatus);
           return (
-            <div key={p} className="flex items-center gap-1 shrink-0">
-              <span className={`chip ${done ? "text-accent border-accent/40 bg-accent/10" : active ? "text-fg border-accent/60 bg-surface-3" : "text-faint border-border"}`}>
-                {active && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-dot" />}
-                {done && <CheckCircle2 className="w-3 h-3" />}
-                {PHASE_LABEL[p]}
-              </span>
-              {i < PHASES.length - 1 && <ChevronRight className="w-3.5 h-3.5 text-faint" />}
+            <div key={p} className="va-step">
+              <span className={`va-step-node ${done ? "done" : active ? "active" : ""}`} />
+              <span className={`va-step-label ${done || active ? "on" : ""}`}>{PHASE_LABEL[p]}</span>
             </div>
           );
         })}
       </div>
 
-      {/* capability degradation banner */}
+      {/* degradation banner */}
       {notices.length > 0 && (
-        <div className="px-6 pt-3 shrink-0">
-          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2.5">
-            <div className="flex items-center gap-2 mb-1.5">
-              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-              <span className="text-sm font-semibold text-amber-300">能力降级提示 · 本次审计未在最大能力下运行</span>
-              <span className="chip text-amber-300/80 border-amber-500/40 ml-1">{notices.length}</span>
-            </div>
-            <ul className="space-y-1 pl-6">
-              {notices.map((n, i) => (
-                <li key={i} className="text-xs flex items-start gap-1.5">
-                  <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${n.severity === "error" ? "bg-critical" : "bg-amber-400"}`} />
-                  <span className={n.severity === "error" ? "text-critical" : "text-amber-200/90"}>
-                    <span className="font-medium">{n.mechanism}</span>：{n.detail}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+        <div className="va-degrade">
+          <span className="va-degrade-k">能力降级</span>
+          {notices.map((n, i) => (
+            <span key={i} className="va-degrade-i">
+              {i > 0 && <span className="va-mid"> · </span>}
+              {n.mechanism}{n.detail ? `（${n.detail}）` : ""}
+            </span>
+          ))}
+          <span className="va-mid"> · </span><span className="va-degrade-note">结果仍会标记置信来源</span>
         </div>
       )}
 
-      {/* stat cards */}
-      <div className="px-6 py-4 grid grid-cols-2 lg:grid-cols-5 gap-3 shrink-0">
-        <StatCard label="确认漏洞" value={counts.total_findings ?? findings.length} tone="fg"
-          sub={`动态复现 ${counts.confirmed_dynamic ?? 0}`} />
-        <StatCard label="严重" value={bys.critical ?? 0} tone="critical" />
-        <StatCard label="高危" value={bys.high ?? 0} tone="high" />
-        <StatCard label="疑似待复核" value={counts.suspected ?? 0} tone="medium" />
-        <StatCard label="已排除" value={counts.rejected ?? 0} tone="muted" />
-      </div>
-      <div className="px-6 pb-3 shrink-0">
-        <SeverityBar by={bys} />
+      {/* stat strip */}
+      <div className="va-stats">
+        <Stat n={counts.total_findings ?? findings.length} label="确认" tone="" />
+        <Stat n={bys.critical ?? 0} label="严重" tone="sv-critical" />
+        <Stat n={bys.high ?? 0} label="高危" tone="sv-high" />
+        <Stat n={counts.suspected ?? 0} label="疑似" tone="sv-medium" />
+        <Stat n={counts.rejected ?? 0} label="排除" tone="va-dim" last />
       </div>
 
-      {/* main split */}
-      <div className="flex-1 min-h-0 grid lg:grid-cols-2 gap-4 px-6 pb-6">
-        {/* timeline */}
-        <section className="card flex flex-col min-h-0">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-            <Activity className="w-4 h-4 text-accent" />
-            <span className="font-medium text-sm">智能体执行时间线</span>
-            {!finished && liveStatus === "running" && (
-              <span className="ml-auto flex items-center gap-1.5 text-xs text-accent">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" /> 实时
-              </span>
-            )}
+      {/* body split */}
+      <div className="va-body">
+        <section className="va-panel va-stream">
+          <div className="va-panel-head">
+            <span className="va-panel-t">智能体执行流</span>
+            <span className="va-panel-tag va-mono">
+              {isLiveRunning ? <><span className="va-pdot va-pulse" /> SSE live</> : "回放"}
+            </span>
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto p-4">
-            <Timeline events={events} />
+          <div className="va-panel-body">
+            <TraceStream events={events} running={isLiveRunning} />
           </div>
         </section>
 
-        {/* findings */}
-        <section className="card flex flex-col min-h-0">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-            <span className="font-medium text-sm">漏洞列表</span>
-            <span className="chip text-muted border-border ml-1">{findings.length}</span>
+        <section className="va-panel va-flist">
+          <div className="va-panel-head">
+            <span className="va-panel-t">漏洞列表</span>
+            <span className="va-panel-tag va-mono">click = 证据链 · {findings.length}</span>
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-border/60">
+          <div className="va-panel-body">
             {findings.length === 0 && (
-              <div className="text-sm text-faint py-10 text-center">
+              <div className="va-flist-empty va-mono">
                 {liveStatus === "running" ? "验证中，确认的漏洞将实时出现…" : "暂无确认漏洞"}
               </div>
             )}
-            {findings.map((f) => (
-              <button key={f.id} onClick={() => openFinding(f.id)}
-                className="w-full text-left px-4 py-3 hover:bg-surface-3/50 transition-colors flex flex-col gap-1.5">
-                <div className="flex items-center gap-2">
-                  <SeverityBadge level={f.severity?.level} score={f.severity?.score} />
-                  <ConfidenceBadge value={f.confidence} />
-                  <ChevronRight className="w-4 h-4 text-faint ml-auto" />
-                </div>
-                <div className="font-mono text-xs text-fg truncate">{f.title}</div>
-              </button>
-            ))}
+            {findings.map((f) => <FindingRow key={f.id} f={f} onClick={() => openFinding(f.id)} />)}
           </div>
         </section>
       </div>
 
-      {/* finding detail drawer */}
-      {selected && (
-        <>
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 animate-fade-in" onClick={() => setSelected(null)} />
-          <aside className="fixed right-0 top-0 bottom-0 w-full max-w-xl bg-surface border-l border-border z-50 flex flex-col animate-fade-in">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-              <span className="font-medium text-sm">漏洞证据链</span>
-              <button className="btn-ghost px-2" onClick={() => setSelected(null)}><X className="w-4 h-4" /></button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-5">
-              <EvidenceChain f={selected} />
-            </div>
-          </aside>
-        </>
-      )}
-
-      {reportOpen && id && <ReportModal taskId={id} onClose={() => setReportOpen(false)} />}
-
       {liveStatus === "failed" && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 chip text-critical border-critical/40 bg-critical/10 z-30">
-          <AlertTriangle className="w-4 h-4" /> 审计失败：{task?.error}
-        </div>
+        <div className="va-failbar va-mono">审计失败：{task?.error}</div>
       )}
+
+      {selected && <FindingDrawer f={selected} onClose={() => setSelected(null)} />}
+      {reportOpen && id && <ReportSheet taskId={id} onClose={() => setReportOpen(false)} />}
     </div>
   );
 }
 
-function StatusPill({ status }: { status: string }) {
-  const map: Record<string, { t: string; c: string }> = {
-    running: { t: "进行中", c: "text-accent border-accent/40 bg-accent/10" },
-    paused: { t: "已暂停", c: "text-amber-300 border-amber-500/40 bg-amber-500/10" },
-    cancelling: { t: "停止中", c: "text-amber-300 border-amber-500/40 bg-amber-500/10" },
-    cancelled: { t: "已停止", c: "text-muted border-border" },
-    succeeded: { t: "已完成", c: "text-accent border-accent/40 bg-accent/10" },
-    failed: { t: "失败", c: "text-critical border-critical/40 bg-critical/10" },
-    queued: { t: "排队中", c: "text-muted border-border" },
-  };
-  const m = map[status] || map.queued;
+// ---------- stat ----------
+function Stat({ n, label, tone, last }: { n: number; label: string; tone: string; last?: boolean }) {
   return (
-    <span className={`chip ${m.c}`}>
-      {status === "running" && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-dot" />}
-      {m.t}
+    <div className={`va-stat ${last ? "last" : ""}`}>
+      <div className={`va-stat-n ${tone}`}>{n}</div>
+      <div className="va-stat-l">{label}</div>
+    </div>
+  );
+}
+
+// ---------- status pill ----------
+function StatusPill({ status }: { status: string }) {
+  const running = status === "running";
+  const tone = ["running", "succeeded"].includes(status) ? "ok"
+    : ["failed"].includes(status) ? "bad"
+    : ["paused", "cancelling"].includes(status) ? "warn" : "mute";
+  return (
+    <span className={`va-spill s-${tone}`}>
+      {running && <span className="va-pdot va-pulse" />}
+      {STATUS_LABEL[status] || status}
     </span>
   );
 }
 
-function fmtElapsed(ms: number | null): string {
-  if (ms == null || ms < 0) return "00:00";
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+// ---------- execution stream ----------
+function TraceStream({ events, running }: { events: LiveEvent[]; running: boolean }) {
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (running) endRef.current?.scrollIntoView({ block: "end" });
+  }, [events.length, running]);
+
+  // walk events, tracking the acting agent so tool lines read "hunter ▸ read_file app.py"
+  const rows: React.ReactNode[] = [];
+  let agent = "system";
+  for (const e of events) {
+    const d = e.data || {};
+    const t = hhmm(e.ts);
+    switch (e.event) {
+      case "agent.started":
+        agent = d.agent || agent;
+        rows.push(<Line key={e.seq} t={t} a={agent}>开始工作 <span className="va-dim">{d.node}</span></Line>);
+        break;
+      case "tool.invoked":
+        rows.push(<Line key={e.seq} t={t} a={agent} tool={d.tool}
+          arg={d.args_brief && Object.entries(d.args_brief).map(([k, v]) => `${k}=${v}`).join(" ")} />);
+        break;
+      case "agent.thinking":
+        rows.push(<Note key={e.seq}>思考：{d.text}</Note>);
+        break;
+      case "agent.reasoning":
+        rows.push(<Note key={e.seq} clamp>思考：{d.text}</Note>);
+        break;
+      case "agent.llm_output":
+        rows.push(<Note key={e.seq} clamp mono>{d.text}</Note>);
+        break;
+      case "assess.ready":
+        rows.push(<Line key={e.seq} t={t} a="profiler">规模评估 · 档位 {d.profile?.tier}</Line>);
+        break;
+      case "candidate.recorded":
+        rows.push(<Line key={e.seq} t={t} a={agent}>候选 <span className="va-mono">{d.vuln_type}</span>{" "}
+          <span className="va-dim va-mono">{d.location?.file}:{d.location?.line}</span></Line>);
+        break;
+      case "sandbox.poc_attempt":
+        rows.push(<Line key={e.seq} t={t} a="validator">sandbox <span className="va-mono">{d.vuln_type}</span>{" "}
+          <span className={d.reproduced ? "va-ok" : "va-dim"}>{d.reproduced ? "✓ 复现" : d.attempted ? "未复现" : "跳过"}</span></Line>);
+        break;
+      case "provision.ready":
+        rows.push(<Line key={e.seq} t={t} a="provisioner">环境就绪 <span className="va-dim">端口 {d.port}</span></Line>);
+        break;
+      case "provision.failed":
+        rows.push(<Note key={e.seq}>环境未搭建成功，回落逐候选复现：{d.reason}</Note>);
+        break;
+      case "preheat.ready":
+        rows.push(<Line key={e.seq} t={t} a="provisioner">核验预热就绪</Line>);
+        break;
+      case "degradation.notice":
+        rows.push(<Note key={e.seq} warn>能力降级 · {d.mechanism}：{d.detail}</Note>);
+        break;
+      case "finding.confirmed":
+        rows.push(<Line key={e.seq} t={t} a="validator" ok>✓ 确认 <span className="va-mono">{d.title || d.vuln_type}</span>{" "}
+          <span className="va-dim">{d.confidence}</span></Line>);
+        break;
+      case "finding.rejected":
+        rows.push(<Note key={e.seq}>已排除 {d.vuln_type}</Note>);
+        break;
+      case "task.status":
+        if (d.status === "running") rows.push(<Note key={e.seq}>阶段 → {d.phase}</Note>);
+        break;
+      default: break;
+    }
+  }
+
+  return (
+    <div className="va-stream-list">
+      {rows.length === 0 && <div className="va-flist-empty va-mono">{running ? "等待智能体启动…" : "无执行记录"}</div>}
+      {rows}
+      <div ref={endRef} />
+    </div>
+  );
 }
 
-// Parse a backend timestamp. The backend serializes naive UTC WITHOUT a timezone offset;
-// treat an offset-less string as UTC (not the browser's local zone) to avoid an 8h skew.
-function parseTs(s?: string | null): number | null {
-  if (!s) return null;
-  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z";
-  const ms = Date.parse(iso);
-  return Number.isNaN(ms) ? null : ms;
+function Line({ t, a, tool, arg, ok, children }: any) {
+  const color = AGENT_COLOR[a] || AGENT_COLOR.system;
+  return (
+    <div className="va-tl va-fade">
+      <span className="va-tl-t va-mono">{t}</span>
+      <span className="va-tl-a va-mono" style={{ color }}>{a}</span>
+      <span className="va-tl-arrow">▸</span>
+      <span className={`va-tl-x ${ok ? "va-ok" : ""}`}>
+        {tool ? <><span className="va-mono va-tl-tool">{tool}</span>{arg && <span className="va-mono va-dim"> {arg}</span>}</> : children}
+      </span>
+    </div>
+  );
 }
+function Note({ children, clamp, mono, warn }: any) {
+  return <div className={`va-tl-note ${clamp ? "clamp" : ""} ${mono ? "va-mono" : ""} ${warn ? "warn" : ""}`}>{children}</div>;
+}
+
+// ---------- finding row ----------
+function FindingRow({ f, onClick }: { f: Finding; onClick: () => void }) {
+  const s = sevClass(f.severity?.level);
+  const src = f.evidence?.source, sink = f.evidence?.sink;
+  const path = src && sink ? `${loc(src)} → ${loc(sink)}` : (f.evidence?.sink ? loc(f.evidence.sink) : "");
+  const conf = CONF_LABEL[f.confidence] || "疑似";
+  const confOk = f.confidence === "CONFIRMED_DYNAMIC";
+  return (
+    <button className="va-fr" onClick={onClick}>
+      <span className={`va-fr-dot ${s.dot}`} />
+      <span className="va-fr-main">
+        <span className="va-fr-title">{f.title}</span>
+        {path && <span className="va-fr-path va-mono">{path}</span>}
+      </span>
+      {typeof f.severity?.score === "number" && <span className="va-fr-score va-mono">{f.severity.score.toFixed(1)}</span>}
+      <span className={`va-fr-sev va-mono ${s.text}`}>{s.label}</span>
+      <span className={`va-fr-act va-mono ${confOk ? "va-ok" : "va-dim"}`}>{conf}</span>
+    </button>
+  );
+}
+
+// ---------- finding drawer ----------
+function FindingDrawer({ f, onClose }: { f: Finding; onClose: () => void }) {
+  const s = sevClass(f.severity?.level);
+  const ev = f.evidence;
+  const conf = CONF_LABEL[f.confidence] || "疑似";
+  const poc = f.artifacts?.find((a) => a.kind === "poc_code");
+  const reach = ev?.reachability || {};
+  const sv = ev?.static_verdict || {};
+  const dyn = ev?.dynamic_verification;
+  const hops = buildTrace(ev);
+
+  return (
+    <>
+      <div className="va-mask" onClick={onClose} />
+      <aside className="va-drawer va-fade">
+        <div className="va-dr-head">
+          <div className="va-dr-title-wrap">
+            <h2 className="va-dr-title">{f.title}</h2>
+            <div className="va-dr-sub va-mono">
+              finding {f.id?.slice(0, 6)}
+              {ev?.source?.file && <> · {ev.source.file} <span className="va-arrow">→</span> {ev?.sink?.file}</>}
+            </div>
+          </div>
+          <button className="va-x" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="va-dr-badge">
+          <span className={`va-tag ${sevTagCls(s.key)}`}>
+            <span className={`va-tag-dot ${s.dot}`} />
+            {s.label} {typeof f.severity?.score === "number" ? f.severity.score.toFixed(1) : ""} · {conf}
+          </span>
+        </div>
+
+        <div className="va-dr-body">
+          {/* the trace */}
+          <div className="va-sec">
+            <div className="va-sec-h">证据链 <span className="va-mono va-dim">The Trace</span></div>
+            <div className="va-trace-v">
+              {hops.map((h, i) => (
+                <div key={i} className={`va-tv-row ${h.kind}`}>
+                  <span className="va-tv-rail">
+                    <span className={`va-tv-node ${h.kind === "sink" ? "sink" : ""}`} />
+                    {i < hops.length - 1 && <span className="va-tv-line" />}
+                  </span>
+                  <div className="va-tv-x">
+                    <div className="va-tv-tag va-mono">{h.tag}</div>
+                    <div className="va-tv-loc va-mono">{h.loc}</div>
+                    {h.detail && <div className="va-tv-detail va-mono">{h.detail}</div>}
+                  </div>
+                </div>
+              ))}
+              {hops.length === 0 && <div className="va-dim va-mono">无污点路径数据</div>}
+            </div>
+          </div>
+
+          {/* reachability + verification */}
+          <div className="va-sec">
+            <div className="va-sec-h">可达性与验证</div>
+            <div className="va-verify va-mono">
+              <span className={reach.reachable ? "va-ok" : "sv-medium"}>{reach.reachable ? "可达" : "待确认"}</span>
+              {(reach.engine || reach.confidence != null) && (
+                <span className="va-dim"> ({[reach.engine, reach.confidence != null ? `置信 ${reach.confidence}` : ""].filter(Boolean).join(", ")})</span>
+              )}
+              <span className="va-mid"> · </span>静态 <span>{sv.status || "—"}</span>
+              <span className="va-mid"> · </span>
+              动态沙箱 {dyn?.reproduced ? <span className="va-ok">复现</span> : dyn?.attempted ? <span className="sv-medium">未复现</span> : <span className="va-dim">跳过</span>}
+            </div>
+            {(sv.rationale || reach.note) && <div className="va-verify-note">{sv.rationale || reach.note}</div>}
+          </div>
+
+          {/* CVSS */}
+          {f.cvss_explained && (
+            <div className="va-sec">
+              <div className="va-sec-h">CVSS v3.1 说明 <span className="va-mono va-dim">{f.cvss_explained.score} · {f.cvss_explained.level?.toUpperCase()}</span></div>
+              <div className="va-cvss">
+                {f.cvss_explained.metrics.map((m) => (
+                  <div key={m.metric} className="va-cvss-i">
+                    <span className="va-cvss-k">{m.label.split(" (")[0]}：</span>
+                    <span className="va-cvss-v">{m.value_label.split(" (")[0]}</span>
+                  </div>
+                ))}
+                <div className="va-cvss-i wide">
+                  <span className="va-cvss-k">向量：</span>
+                  <span className="va-cvss-v va-mono">{f.cvss_explained.vector}</span>
+                </div>
+              </div>
+              <div className="va-cvss-note">据本实例的鉴权/暴露面/影响调整，非类别默认值</div>
+            </div>
+          )}
+
+          {/* PoC */}
+          {poc && (
+            <div className="va-sec">
+              <div className="va-sec-h">PoC</div>
+              <pre className="va-code va-mono">{poc.content}</pre>
+            </div>
+          )}
+
+          {/* remediation */}
+          {f.remediation && (
+            <div className="va-sec">
+              <div className="va-sec-h">修复建议</div>
+              <div className="va-remed">{f.remediation}</div>
+            </div>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+// ---------- report sheet ----------
+const FORMATS = [
+  { key: "markdown", label: "Markdown", ext: "md" },
+  { key: "json", label: "JSON", ext: "json" },
+  { key: "sarif", label: "SARIF", ext: "sarif" },
+];
+function ReportSheet({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  async function gen(fmt: string, ext: string) {
+    setBusy(fmt); setErr("");
+    try {
+      const r = await api.report(taskId, fmt);
+      const blob = new Blob([r.content], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `veriaudit-${taskId.slice(0, 8)}.${ext}`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) { setErr(String(e.message || e)); }
+    finally { setBusy(""); }
+  }
+  return (
+    <>
+      <div className="va-mask" onClick={onClose} />
+      <div className="va-modal va-fade">
+        <div className="va-card va-report">
+          <div className="va-report-head">
+            <div>
+              <div className="va-label">报告导出</div>
+              <div className="va-report-title">选择格式</div>
+            </div>
+            <button className="va-x" onClick={onClose}>✕</button>
+          </div>
+          {err && <div className="va-err va-mono">{err}</div>}
+          <div className="va-report-list">
+            {FORMATS.map((f) => (
+              <div key={f.key} className="va-report-row">
+                <span className="va-report-fmt">{f.label}</span>
+                <button className="va-gen va-mono" disabled={!!busy} onClick={() => gen(f.key, f.ext)}>
+                  {busy === f.key ? "生成中…" : "生成"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------- helpers ----------
+function hhmm(ms: number) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function loc(l: any) {
+  return l ? `${l.file}:${l.line}` : "";
+}
+function sevTagCls(key: string) {
+  return { critical: "t-crit", high: "t-high", medium: "t-med", low: "t-low", info: "t-mute" }[key] || "t-mute";
+}
+function buildTrace(ev: any): { kind: string; tag: string; loc: string; detail?: string }[] {
+  if (!ev) return [];
+  const out: { kind: string; tag: string; loc: string; detail?: string }[] = [];
+  const path = ev.taint_path || [];
+  if (ev.source) out.push({ kind: "source", tag: "SOURCE", loc: loc(ev.source), detail: ev.source.snippet });
+  let hop = 0;
+  path.forEach((h: any) => {
+    // skip a hop that just repeats the source/sink location; number the shown hops sequentially
+    const l = loc(h.location);
+    if (l && l !== loc(ev.source) && l !== loc(ev.sink)) {
+      hop += 1;
+      out.push({ kind: "hop", tag: `HOP ${hop}`, loc: l,
+        detail: [h.variable ? `[${h.variable}]` : "", h.transform, h.note].filter(Boolean).join(" ") });
+    }
+  });
+  if (ev.sink) out.push({ kind: "sink", tag: "SINK", loc: loc(ev.sink), detail: ev.sink.snippet });
+  return out;
+}
+
+const CSS = `
+.va-con { height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+
+.va-top { height:56px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+  padding:0 clamp(16px,3vw,32px); border-bottom:1px solid var(--hair); background:var(--panel); }
+.va-top-l { display:flex; align-items:center; gap:14px; min-width:0; }
+.va-top-r { display:flex; align-items:center; gap:8px; }
+.va-back { background:none; border:none; cursor:pointer; letter-spacing:.1em; white-space:nowrap; }
+.va-back:hover { color:var(--signal); }
+.va-task-id { font-size:12px; color:var(--faint); }
+.va-elapsed { font-size:13px; color:var(--muted); }
+.va-spill { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:3px 10px; border:1px solid var(--hair); }
+.va-spill.s-ok { color:var(--signal); border-color:rgba(11,138,99,.35); background:var(--signal-w); }
+.va-spill.s-bad { color:var(--crit); border-color:rgba(184,50,39,.35); background:#FBEDEB; }
+.va-spill.s-warn { color:var(--high); border-color:rgba(193,106,34,.35); }
+.va-spill.s-mute { color:var(--faint); }
+
+/* stepper */
+.va-steps { position:relative; flex:0 0 auto; display:flex; justify-content:space-between;
+  padding:20px clamp(24px,5vw,64px) 16px; background:var(--panel); border-bottom:1px solid var(--hair); }
+.va-steps-line { position:absolute; left:clamp(40px,7vw,90px); right:clamp(40px,7vw,90px); top:26px; height:2px; background:var(--hair); }
+.va-step { position:relative; display:flex; flex-direction:column; align-items:center; gap:9px; z-index:1; }
+.va-step-node { width:12px; height:12px; border-radius:50%; background:#fff; border:2px solid var(--hair); }
+.va-step-node.done { background:var(--signal); border-color:var(--signal); }
+.va-step-node.active { border-color:var(--signal); box-shadow:0 0 0 4px var(--signal-w); }
+.va-step-label { font-size:13px; color:var(--faint); }
+.va-step-label.on { color:var(--ink); font-weight:500; }
+
+/* degradation */
+.va-degrade { flex:0 0 auto; display:flex; align-items:center; flex-wrap:wrap; gap:4px;
+  background:#FAF4E6; border-bottom:1px solid #EADFC0; padding:9px clamp(24px,5vw,64px); font-size:12.5px; color:#8A6D1E; }
+.va-degrade-k { font-weight:600; color:#8A6D1E; margin-right:6px; }
+.va-degrade-note { color:#A08945; }
+
+/* stats */
+.va-stats { flex:0 0 auto; display:flex; background:var(--panel); border-bottom:1px solid var(--hair); }
+.va-stat { flex:1; padding:18px clamp(16px,3vw,28px); border-right:1px solid var(--hair2); }
+.va-stat.last { border-right:none; }
+.va-stat-n { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:30px; line-height:1; color:var(--ink); }
+.va-stat-l { font-size:12px; color:var(--muted); margin-top:6px; }
+
+/* body */
+.va-body { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:1fr 1fr; gap:1px;
+  background:var(--hair); }
+.va-panel { display:flex; flex-direction:column; min-height:0; background:var(--paper); }
+.va-panel-head { flex:0 0 auto; display:flex; align-items:baseline; gap:10px; padding:16px 22px 12px; }
+.va-panel-t { font-weight:700; font-size:15px; }
+.va-panel-tag { font-size:12px; color:var(--faint); display:inline-flex; align-items:center; gap:6px; }
+.va-panel-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:4px 22px 22px; }
+.va-flist-empty { color:var(--faint); font-size:13px; padding:32px 0; text-align:center; }
+
+/* stream */
+.va-stream-list { display:flex; flex-direction:column; gap:7px; }
+.va-tl { display:flex; align-items:baseline; gap:9px; font-size:13px; }
+.va-tl-t { color:var(--faint); font-size:12px; flex:none; }
+.va-tl-a { flex:none; font-weight:600; }
+.va-tl-arrow { color:var(--faint); flex:none; }
+.va-tl-x { color:var(--ink); min-width:0; }
+.va-tl-tool { color:var(--ink); }
+.va-tl-note { padding-left:52px; font-size:12.5px; color:var(--muted); line-height:1.5; }
+.va-tl-note.clamp { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.va-tl-note.warn { color:#8A6D1E; }
+
+/* findings */
+.va-fr { width:100%; display:flex; align-items:center; gap:12px; padding:14px 4px; text-align:left;
+  background:none; border:none; border-bottom:1px solid var(--hair2); cursor:pointer; transition:background .12s; }
+.va-fr:hover { background:var(--panel2); }
+.va-fr-dot { width:9px; height:9px; border-radius:50%; flex:none; }
+.va-fr-main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.va-fr-title { font-size:14px; font-weight:500; color:var(--ink); }
+.va-fr-path { font-size:12px; color:var(--faint); }
+.va-fr-score { font-size:14px; color:var(--ink); flex:none; }
+.va-fr-sev { font-size:13px; flex:none; width:40px; text-align:right; }
+.va-fr-act { font-size:13px; flex:none; width:48px; text-align:right; }
+
+.va-failbar { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:30;
+  background:#FBEDEB; border:1px solid var(--crit); color:var(--crit); padding:9px 16px; font-size:13px; }
+
+/* drawer */
+.va-mask { position:fixed; inset:0; background:rgba(20,24,27,.28); backdrop-filter:blur(2px); z-index:40; }
+.va-drawer { position:fixed; top:0; right:0; bottom:0; width:100%; max-width:560px; z-index:50;
+  background:var(--panel); border-left:1px solid var(--hair); display:flex; flex-direction:column; }
+.va-dr-head { flex:0 0 auto; display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  padding:22px 24px 14px; border-bottom:1px solid var(--hair); }
+.va-dr-title { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:22px; margin:0; }
+.va-dr-sub { font-size:12px; color:var(--faint); margin-top:6px; }
+.va-x { background:none; border:none; cursor:pointer; color:var(--faint); font-size:14px; flex:none; }
+.va-x:hover { color:var(--ink); }
+.va-dr-badge { flex:0 0 auto; padding:14px 24px; border-bottom:1px solid var(--hair); }
+.va-dr-body { flex:1 1 auto; overflow-y:auto; padding:22px 24px 40px; }
+.va-sec { margin-bottom:26px; }
+.va-sec-h { font-weight:700; font-size:14px; margin-bottom:14px; display:flex; align-items:baseline; gap:8px; }
+
+/* vertical trace */
+.va-trace-v { display:flex; flex-direction:column; }
+.va-tv-row { display:flex; gap:14px; }
+.va-tv-rail { display:flex; flex-direction:column; align-items:center; width:14px; flex:none; }
+.va-tv-node { width:12px; height:12px; border-radius:50%; margin-top:3px; background:#fff; border:2px solid var(--signal); flex:none; }
+.va-tv-node.sink { background:var(--crit); border-color:var(--crit); }
+.va-tv-line { width:2px; flex:1 1 auto; min-height:22px; background:var(--signal); margin:4px 0; opacity:.5; }
+.va-tv-x { padding-bottom:18px; min-width:0; }
+.va-tv-tag { font-size:10.5px; letter-spacing:.12em; color:var(--faint); }
+.va-tv-loc { font-size:13px; color:var(--ink); margin-top:2px; }
+.va-tv-detail { font-size:12px; color:var(--muted); margin-top:3px; }
+
+.va-verify { font-size:13px; line-height:1.6; }
+.va-verify-note { font-size:12.5px; color:var(--muted); margin-top:8px; line-height:1.55; }
+
+.va-cvss { display:grid; grid-template-columns:1fr 1fr; gap:9px 24px; }
+.va-cvss-i { font-size:13px; }
+.va-cvss-i.wide { grid-column:1 / -1; }
+.va-cvss-k { color:var(--muted); }
+.va-cvss-v { color:var(--ink); }
+.va-cvss-note { font-size:11.5px; color:var(--faint); margin-top:12px; }
+
+.va-code { background:var(--panel2); border:1px solid var(--hair); padding:12px 14px; font-size:12px;
+  color:var(--ink); overflow-x:auto; white-space:pre-wrap; line-height:1.55; }
+.va-remed { font-size:13.5px; color:var(--muted); line-height:1.65; }
+
+/* report sheet */
+.va-modal { position:fixed; inset:0; display:grid; place-items:center; z-index:50; padding:24px; pointer-events:none; }
+.va-report { width:100%; max-width:420px; pointer-events:auto; background:var(--panel); }
+.va-report-head { display:flex; align-items:flex-start; justify-content:space-between; padding:22px 24px 16px; }
+.va-report-title { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:22px; margin-top:6px; }
+.va-report-list { border-top:1px solid var(--hair); }
+.va-report-row { display:flex; align-items:center; justify-content:space-between; padding:16px 24px; border-bottom:1px solid var(--hair2); }
+.va-report-row:last-child { border-bottom:none; }
+.va-report-fmt { font-size:15px; font-weight:500; }
+.va-gen { background:none; border:none; cursor:pointer; color:var(--signal); font-size:14px; font-weight:600; }
+.va-gen:hover:not(:disabled) { text-decoration:underline; text-underline-offset:2px; }
+.va-gen:disabled { color:var(--faint); cursor:default; }
+.va-err { color:var(--crit); background:#FBEDEB; border:1px solid var(--crit); margin:0 24px 12px; padding:8px 12px; font-size:12px; }
+
+@media (max-width:860px) {
+  .va-body { grid-template-columns:1fr; grid-auto-rows:minmax(280px,auto); }
+  .va-stats { overflow-x:auto; }
+  .va-stat { min-width:88px; }
+}
+`;
