@@ -52,7 +52,7 @@ export default function TaskConsole() {
       const done = ["succeeded", "failed", "cancelled"].includes(t.status);
       setLive(!done);
       refreshFindings();
-      if (done) api.timeline(id).then((items) => setHistEvents(timelineToEvents(items))).catch(() => {});
+      if (done) api.timeline(id).then((items) => setHistEvents(timelineToEvents(items, t.status))).catch(() => {});
     });
   }, [id, refreshFindings]);
 
@@ -276,6 +276,12 @@ function TraceStream({ events, running }: { events: LiveEvent[]; running: boolea
         agent = d.agent || agent;
         rows.push(<Line key={e.seq} t={t} a={agent}>开始工作 <span className="va-dim">{d.node}</span></Line>);
         break;
+      case "agent.finished":
+        rows.push(<Line key={e.seq} t={t} a={d.agent || agent}><span className="va-ok">✓</span> 完成工作</Line>);
+        break;
+      case "task.finished":
+        rows.push(<Done key={e.seq} data={d} />);
+        break;
       case "tool.invoked":
         rows.push(<Line key={e.seq} t={t} a={agent} tool={d.tool}
           arg={d.args_brief && Object.entries(d.args_brief).map(([k, v]) => `${k}=${v}`).join(" ")} />);
@@ -284,13 +290,13 @@ function TraceStream({ events, running }: { events: LiveEvent[]; running: boolea
         rows.push(<Note key={e.seq}>思考：{d.text}</Note>);
         break;
       case "agent.reasoning":
-        rows.push(<Note key={e.seq} clamp>思考：{d.text}</Note>);
+        rows.push(<Reason key={e.seq} agent={agent} text={d.text} />);
         break;
       case "agent.llm_output":
-        rows.push(<Note key={e.seq} clamp mono>{d.text}</Note>);
+        rows.push(<Reason key={e.seq} agent={agent} text={d.text} label="模型输出" mono />);
         break;
       case "assess.ready":
-        rows.push(<Line key={e.seq} t={t} a="profiler">规模评估 · 档位 {d.profile?.tier}</Line>);
+        rows.push(<Budget key={e.seq} profile={d.profile || {}} budget={d.budget || {}} />);
         break;
       case "candidate.recorded":
         rows.push(<Line key={e.seq} t={t} a={agent}>候选 <span className="va-mono">{d.vuln_type}</span>{" "}
@@ -340,6 +346,7 @@ function Line({ t, a, tool, arg, ok, children }: any) {
   return (
     <div className="va-tl va-fade">
       <span className="va-tl-t va-mono">{t}</span>
+      <span className="va-tl-dot" style={{ background: color }} />
       <span className="va-tl-a va-mono" style={{ color }}>{a}</span>
       <span className="va-tl-arrow">▸</span>
       <span className={`va-tl-x ${ok ? "va-ok" : ""}`}>
@@ -348,8 +355,64 @@ function Line({ t, a, tool, arg, ok, children }: any) {
     </div>
   );
 }
-function Note({ children, clamp, mono, warn }: any) {
-  return <div className={`va-tl-note ${clamp ? "clamp" : ""} ${mono ? "va-mono" : ""} ${warn ? "warn" : ""}`}>{children}</div>;
+function Note({ children, scroll, mono, warn }: any) {
+  return <div className={`va-tl-note ${scroll ? "scroll" : ""} ${mono ? "va-mono" : ""} ${warn ? "warn" : ""}`}>{children}</div>;
+}
+// model reasoning / output — a bordered, fully-scrollable panel so long thinking is never cut off
+function Reason({ agent, text, label = "模型思考", mono }: any) {
+  const color = AGENT_COLOR[agent] || AGENT_COLOR.system;
+  return (
+    <div className="va-reason va-fade">
+      <div className="va-reason-h" style={{ color, borderColor: color }}>{agent} · {label}</div>
+      <div className={`va-reason-b ${mono ? "va-mono" : ""}`}>{text}</div>
+    </div>
+  );
+}
+// terminal marker — the audit as a whole has finished (succeeded / failed / stopped)
+function Done({ data }: any) {
+  const outcome = data.status
+    ? data.status
+    : data.error ? "failed" : data.cancelled ? "cancelled" : "succeeded";
+  const map: Record<string, { t: string; c: string; mk: string }> = {
+    succeeded: { t: "审计完成", c: "ok", mk: "✓" },
+    failed: { t: "审计失败", c: "bad", mk: "✕" },
+    cancelled: { t: "审计已停止", c: "mute", mk: "■" },
+  };
+  const m = map[outcome] || map.succeeded;
+  const err = typeof data.error === "string" ? data.error : "";
+  return (
+    <div className={`va-done va-done-${m.c} va-mono va-fade`}>
+      <span className="va-done-mk">{m.mk}</span>
+      <span>{m.t}{outcome === "failed" && err ? ` · ${err}` : ""}</span>
+    </div>
+  );
+}
+
+// adaptive budget / caps for this run — surfaced in the stream like the deterministic pool
+function Budget({ profile, budget }: any) {
+  const items: [string, any][] = [
+    ["挖掘步数", budget.llm_hunt_steps],
+    ["候选上限", budget.max_candidates],
+    ["验证上限", budget.max_verify],
+    ["LLM 三分类上限", budget.llm_triage_limit],
+    ["搭建步数", budget.provisioner_max_steps],
+    ["搭建时长", budget.provisioner_timeout_sec && `${budget.provisioner_timeout_sec}s`],
+    ["任务时长", budget.task_timeout_sec && `${budget.task_timeout_sec}s`],
+  ];
+  const shown = items.filter(([, v]) => v != null && v !== false);
+  return (
+    <div className="va-budget va-fade">
+      <div className="va-budget-h">规模评估 · 档位 {profile.tier ?? "—"}</div>
+      {profile.rationale && <div className="va-budget-r">{profile.rationale}</div>}
+      {shown.length > 0 && (
+        <div className="va-budget-chips">
+          {shown.map(([k, v]) => (
+            <span key={k} className="va-budget-c va-mono"><span className="va-budget-ck">{k}</span> {v}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------- finding row ----------
@@ -603,6 +666,11 @@ const CSS = `
 .va-stat { flex:1; padding:18px clamp(16px,3vw,28px); border-right:1px solid var(--hair2); }
 .va-stat.last { border-right:none; }
 .va-stat-n { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:30px; line-height:1; color:var(--ink); }
+/* tone overrides — higher specificity than the base .va-stat-n color so severities show their color */
+.va-stat-n.sv-critical { color:var(--crit); }
+.va-stat-n.sv-high { color:var(--high); }
+.va-stat-n.sv-medium { color:var(--med); }
+.va-stat-n.va-dim { color:var(--faint); }
 .va-stat-l { font-size:12px; color:var(--muted); margin-top:6px; }
 
 /* body */
@@ -616,16 +684,43 @@ const CSS = `
 .va-flist-empty { color:var(--faint); font-size:13px; padding:32px 0; text-align:center; }
 
 /* stream */
-.va-stream-list { display:flex; flex-direction:column; gap:7px; }
-.va-tl { display:flex; align-items:baseline; gap:9px; font-size:13px; }
-.va-tl-t { color:var(--faint); font-size:12px; flex:none; }
-.va-tl-a { flex:none; font-weight:600; }
-.va-tl-arrow { color:var(--faint); flex:none; }
+.va-stream-list { display:flex; flex-direction:column; gap:8px; }
+.va-tl { display:flex; align-items:baseline; gap:8px; font-size:13px; }
+.va-tl-t { color:var(--faint); font-size:12px; flex:none; width:38px; }
+.va-tl-dot { width:7px; height:7px; border-radius:50%; flex:none; align-self:center; }
+.va-tl-a { flex:none; font-weight:700; min-width:66px; }
+.va-tl-arrow { color:#B7BEBB; flex:none; }
 .va-tl-x { color:var(--ink); min-width:0; }
-.va-tl-tool { color:var(--ink); }
-.va-tl-note { padding-left:52px; font-size:12.5px; color:var(--muted); line-height:1.5; }
-.va-tl-note.clamp { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-.va-tl-note.warn { color:#8A6D1E; }
+.va-tl-tool { color:var(--ink); background:var(--panel2); border:1px solid var(--hair);
+  padding:1px 7px; border-radius:0; }
+.va-tl-note { padding-left:52px; font-size:12.5px; color:var(--muted); line-height:1.55;
+  border-left:2px solid var(--hair); margin-left:52px; padding-left:12px; }
+.va-tl-note.scroll { max-height:190px; overflow-y:auto; }
+.va-tl-note.warn { color:#8A6D1E; border-left-color:#EADFC0; }
+
+/* model reasoning / output — bordered, scrollable, full content */
+.va-reason { margin-left:52px; border:1px solid var(--hair); background:var(--panel); }
+.va-reason-h { font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700;
+  padding:6px 12px; border-bottom:1px solid var(--hair); border-left:3px solid; }
+.va-reason-b { padding:9px 12px; font-size:12.5px; color:var(--muted); line-height:1.6;
+  white-space:pre-wrap; max-height:220px; overflow-y:auto; }
+
+/* adaptive budget / caps block */
+.va-budget { margin-left:52px; border:1px solid rgba(46,124,196,.28); background:rgba(46,124,196,.05); }
+.va-budget-h { font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:#2E6FA8;
+  padding:7px 12px; border-bottom:1px solid rgba(46,124,196,.2); }
+.va-budget-r { padding:8px 12px 0; font-size:12px; color:var(--muted); line-height:1.55; }
+.va-budget-chips { display:flex; flex-wrap:wrap; gap:7px; padding:9px 12px 11px; }
+.va-budget-c { font-size:11.5px; color:#2E6FA8; border:1px solid rgba(46,124,196,.28); padding:2px 8px; }
+.va-budget-ck { color:var(--muted); }
+
+/* terminal audit-finished marker */
+.va-done { display:flex; align-items:center; gap:9px; margin-top:8px; padding:11px 14px;
+  font-size:13.5px; font-weight:700; border:1px solid; }
+.va-done-mk { font-size:14px; }
+.va-done-ok { color:var(--signal); border-color:rgba(11,138,99,.4); background:var(--signal-w); }
+.va-done-bad { color:var(--crit); border-color:rgba(184,50,39,.4); background:#FBEDEB; }
+.va-done-mute { color:var(--faint); border-color:var(--hair); background:var(--panel2); }
 
 /* findings */
 .va-fr { width:100%; display:flex; align-items:center; gap:12px; padding:14px 4px; text-align:left;

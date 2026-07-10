@@ -74,13 +74,29 @@ export function useTaskEvents(taskId: string | undefined, live: boolean = true) 
 
 // Convert persisted DB timeline (agent_runs + tool_invocations) into renderable
 // events so a FINISHED task can be re-opened and reviewed (even after a restart).
-export function timelineToEvents(items: any[]): LiveEvent[] {
+export function timelineToEvents(items: any[], finalStatus?: string): LiveEvent[] {
   const out: LiveEvent[] = [];
   let seq = 0;
+  let lastAgent = "";
+  let lastTs = 0;
   for (const it of items || []) {
     const ts = it.ts ? Date.parse(it.ts) : 0;
+    if (ts) lastTs = ts;
     if (it.kind === "agent") {
+      // a new (different) agent starting means the previous one finished — surface that boundary
+      if (lastAgent && lastAgent !== it.agent) {
+        out.push({ event: "agent.finished", data: { agent: lastAgent }, ts, seq: seq++ });
+      }
+      lastAgent = it.agent;
       out.push({ event: "agent.started", data: { agent: it.agent, node: it.node, run_id: it.run_id }, ts, seq: seq++ });
+      // profiler persists the adaptive budget/caps in its run output — replay it as assess.ready
+      // so a finished task shows the same budget block a live run does.
+      const o: any = it.output;
+      if (it.agent === "profiler" && o && o.budget) {
+        out.push({ event: "assess.ready", data: {
+          profile: { tier: o.tier, rationale: o.rationale }, budget: o.budget,
+        }, ts, seq: seq++ });
+      }
     } else if (it.kind === "tool") {
       if (it.tool === "llm_call") {
         const r = it.summary?.reasoning;
@@ -97,5 +113,8 @@ export function timelineToEvents(items: any[]): LiveEvent[] {
       }
     }
   }
+  // close the final agent (typically the reporter) and mark the whole audit finished
+  if (lastAgent) out.push({ event: "agent.finished", data: { agent: lastAgent }, ts: lastTs, seq: seq++ });
+  if (finalStatus) out.push({ event: "task.finished", data: { status: finalStatus }, ts: lastTs, seq: seq++ });
   return out;
 }
