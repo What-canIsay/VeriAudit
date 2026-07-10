@@ -23,6 +23,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -384,21 +385,87 @@ def _codeql_packs(codeql: str) -> Optional[str]:
     return str(p) if p.exists() else None
 
 
+_CODEQL_ENV: Optional[dict] = None
+
+
+def _codeql_env() -> dict:
+    """Env for CodeQL subprocesses. CodeQL's Python extractor shells out (via cmd.exe) to the
+    `python` interpreter AND the Windows `py` launcher; if those dirs aren't on the inherited
+    PATH the extractor silently processes NO files ('no source code seen') → a corrupt DB.
+    We prepend the dirs of python + the `py` launcher, resolving them robustly so it works no
+    matter how the server was launched (not only when they happen to be on the shell PATH)."""
+    global _CODEQL_ENV
+    if _CODEQL_ENV is not None:
+        return _CODEQL_ENV
+    env = dict(os.environ)
+    cands = [os.path.dirname(sys.executable), sys.base_prefix]     # venv scripts + base python
+    for n in ("py", "python", "python3"):                          # whatever is on PATH already
+        w = shutil.which(n)
+        if w:
+            cands.append(os.path.dirname(w))
+    la = os.environ.get("LOCALAPPDATA", "")                        # standard `py` launcher homes
+    if la:
+        cands.append(os.path.join(la, "Programs", "Python", "Launcher"))
+    cands += [r"C:\Windows", os.path.join(os.environ.get("WINDIR", r"C:\Windows"))]
+    dirs, seen = [], set()
+    for d in cands:
+        try:
+            d = os.path.normpath(d) if d else ""
+        except Exception:
+            d = ""
+        if d and os.path.isdir(d) and d.lower() not in seen:
+            seen.add(d.lower())
+            dirs.append(d)
+    if dirs:
+        env["PATH"] = os.pathsep.join(dirs) + os.pathsep + env.get("PATH", "")
+    _CODEQL_ENV = env
+    return env
+
+
+def _db_complete(cache: Path) -> bool:
+    """A CodeQL DB is only usable if BOTH the manifest AND the extracted dataset dir exist.
+    A create that was killed (timeout/OOM) writes codeql-database.yml EARLY but never finishes
+    the db-<lang> dataset — checking only the yml (the old bug) reused that corrupt DB forever,
+    so every query failed with 'db-<lang> does not exist' → permanent degrade to Joern."""
+    if not (cache / "codeql-database.yml").exists():
+        return False
+    return any(p.is_dir() for p in cache.glob("db-*"))
+
+
+def _codeql_db_timeout(root: Path) -> int:
+    """DB creation is the heavy one-time step (large projects were killed at the 300s query
+    timeout). Scale the cap with project size, bounded. It's only a CAP — create returns as
+    soon as it finishes, so a generous ceiling costs nothing on normal builds."""
+    base = int(getattr(settings, "codeql_db_timeout_sec", 900))
+    try:
+        n = sum(1 for _ in analysis.iter_source_files(root))
+    except Exception:
+        n = 0
+    return int(min(2400, max(base, 300 + n)))
+
+
 def _codeql_db(root: Path, cql_lang: str, codeql: str) -> Optional[Path]:
     cache = DATA_DIR / "codeql" / (hashlib.md5(str(root).encode()).hexdigest()[:12] + "-" + cql_lang)
-    if (cache / "codeql-database.yml").exists():
+    if _db_complete(cache):
         return cache
     with _DB_LOCK:   # only ONE builder even under parallel dataflow; others reuse the result
-        if (cache / "codeql-database.yml").exists():
+        if _db_complete(cache):
             return cache
+        # remove any corrupt/half-built leftover so create starts from a clean slate
+        if cache.exists():
+            shutil.rmtree(cache, ignore_errors=True)
         cache.parent.mkdir(parents=True, exist_ok=True)
         try:
             r = subprocess.run([codeql, "database", "create", str(cache), f"--language={cql_lang}",
                                 f"--source-root={root}", "--overwrite", f"--ram={settings.codeql_ram_mb}"],
-                               capture_output=True, timeout=settings.codeql_timeout_sec)
-            return cache if (r.returncode == 0 and (cache / "codeql-database.yml").exists()) else None
+                               capture_output=True, timeout=_codeql_db_timeout(root), env=_codeql_env())
+            if r.returncode == 0 and _db_complete(cache):
+                return cache
         except Exception:
-            return None
+            pass
+        # a failed/killed build leaves a corrupt dir → drop it so it is NOT reused next time
+        shutil.rmtree(cache, ignore_errors=True)
+        return None
 
 
 def _codeql_edges(root: Path, lang: str):
@@ -422,11 +489,11 @@ def _codeql_edges(root: Path, lang: str):
         if packs:
             cmd += ["--additional-packs", packs]
         cmd.append(str(ql))
-        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec)
+        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec, env=_codeql_env())
         if r.returncode != 0:
             return None
         dec = subprocess.run([codeql, "bqrs", "decode", "--format=csv", str(out)],
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, timeout=120, env=_codeql_env())
         if dec.returncode != 0:
             return None
         # query SUCCEEDED → trust CodeQL edges even if empty (flat apps have no internal
@@ -584,11 +651,11 @@ def _codeql_dataflow(root: Path, lang: str, from_file: str, from_line: int,
         if packs:
             cmd += ["--additional-packs", packs]
         cmd.append(str(ql))
-        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec)
+        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec, env=_codeql_env())
         if r.returncode != 0:
             return None
         dec = subprocess.run([codeql, "bqrs", "decode", "--format=csv", str(out)],
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, timeout=120, env=_codeql_env())
         if dec.returncode != 0:
             return None
         import csv as _csv

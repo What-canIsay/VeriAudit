@@ -162,7 +162,7 @@ cd ../backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `ENABLE_FRAMEWORK_GUIDANCE` | `true` | **框架感知审计**：把检测到的 Web 框架（Flask/Django/FastAPI/Express/Spring/Rails/Laravel/Gin）的**安全模型**（路由/鉴权/ORM/模板/CSRF）+ **逻辑漏洞排查清单**注入猎手/验证官，让它们据框架真实机制排查**逻辑类漏洞** |
 | `ENABLE_LOGIC_HEURISTICS` | `true` | **逻辑类漏洞结构播种**：框架感知启发式高召回地种下"缺失检查"类候选（**越权/IDOR、缺失鉴权、CSRF**），交验证官**用预热多角色会话实弹确认**（以用户A访问B的资源=IDOR 等）或剪枝；关掉则仅靠 LLM 语义发现 |
 | `ENABLE_CODEQL_CALLGRAPH` | `true` | 调用图精度阶梯之首：CodeQL 精化跨过程调用边(**已实现并验证:python / javascript / typescript**;免构建、精度高)。吃内存(~1.4GB)可能 OOM 降级,机器紧张可设 `false` |
-| `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` | 1400 / 300 | CodeQL 建库/查询的内存上限与超时 |
+| `CODEQL_RAM_MB` / `CODEQL_TIMEOUT_SEC` / `CODEQL_DB_TIMEOUT_SEC` | 2048 / 300 / 900 | CodeQL 内存上限（最低 2048）、单次**查询**超时、**建库**超时（按项目规模自动放大至 40min）。建库被超时杀掉会留半成品库——已修：不完整的库会自动清理重建，不再永久降级 Joern |
 | `ENABLE_JOERN_CALLGRAPH` | `true` | 阶梯第二级：Joern 多语言调用图(**已验证:PHP / Go / Python**;Java/JS 前端就绪)。**免构建**——含 Go 等编译型语言直接解析源码,无需编译。需 joern-cli + JDK17+(自动探测 `D:/Tools`);PHP/JS/Go 前端另需 `php`/`node`/`go` |
 | `JOERN_DIR` / `JOERN_JAVA_HOME` / `JOERN_TIMEOUT_SEC` | 自动 / 自动 / 420 | joern-cli 目录、JDK17+ 路径(留空自动探测 D:/Tools)、单步超时 |
 | `ENABLE_RAG` | `true` | **RAG 语义检索总开关**（作"发现/导航"，定案仍以 `read_file` 精确阅读为准，防误报）。用于两处：① `search_code_semantic` 对全项目代码建向量索引(按文件 hash 增量)、以自然语言定位同类危险模式/净化/入口(索引在侦察阶段建，仅云端模型模式)；② `search_vuln_kb` 对漏洞知识库做**语义+关键词混合**检索。设 `false`=**全面关闭**：语义代码检索工具在猎手/验证官/预热处均隐藏、不建索引、知识库回落纯关键词 |

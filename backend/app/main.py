@@ -28,11 +28,23 @@ app.include_router(router)
 @app.on_event("startup")
 async def _startup() -> None:
     import asyncio
+    from datetime import datetime, timezone
     from . import events, orchestrator
+    from .db import session_scope
+    from .models import AuditTask
     init_db()
     loop = asyncio.get_event_loop()
     orchestrator.set_loop(loop)
     events.set_loop(loop)
+    # reconcile ORPHANED tasks: the in-process orchestrator that ran them died with the
+    # previous server, so anything still 'running/queued/paused/cancelling' can never finish
+    # → mark failed so the UI doesn't show zombie "running" tasks forever.
+    _ACTIVE = ("running", "queued", "paused", "cancelling")
+    with session_scope() as s:
+        for t in s.query(AuditTask).filter(AuditTask.status.in_(_ACTIVE)).all():
+            t.status = "failed"
+            t.error = "中断：后端已重启（该任务的执行进程随上次运行结束而丢失）"
+            t.finished_at = datetime.now(timezone.utc)
 
 
 @app.get("/healthz")

@@ -123,8 +123,9 @@ class Settings(BaseSettings):
     # Joern). Degrades to Joern/Tree-sitter on any failure. CodeQL is memory-heavy (~1.4GB)
     # and can OOM on constrained machines → set false to disable.
     enable_codeql_callgraph: bool = True
-    codeql_ram_mb: int = 1400             # RAM cap for codeql db-create / query
-    codeql_timeout_sec: int = 300         # per codeql step timeout (build/query)
+    codeql_ram_mb: int = 2048             # RAM cap (CodeQL's MINIMUM is 2048; lower is silently raised)
+    codeql_timeout_sec: int = 300         # per-QUERY timeout (compile+eval; queries are fast)
+    codeql_db_timeout_sec: int = 900      # DB-CREATE cap (heavy one-time; scales up with project size)
     # Joern: multi-language (incl. PHP/Go/Java, no build) call-graph fallback below CodeQL.
     # Needs the joern-cli dir + a JDK 17+ (auto-detected under D:/Tools; override here).
     enable_joern_callgraph: bool = True
