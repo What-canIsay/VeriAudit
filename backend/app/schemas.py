@@ -63,7 +63,9 @@ def finding_out(f, full: bool = False) -> dict:
         "created_at": f.created_at.isoformat() if f.created_at else None,
     }
     if full:
+        from .severity import explain_vector
         d["remediation"] = f.remediation
+        d["cvss_explained"] = explain_vector(f.cvss_vector) if f.cvss_vector else None
         d["evidence"] = evidence_out(f.evidence)
         d["artifacts"] = [
             {"id": a.id, "kind": a.kind, "meta": a.meta or {}, "content": a.content}

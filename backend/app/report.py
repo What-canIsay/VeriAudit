@@ -93,7 +93,12 @@ def _markdown(proj, counts, depth, summary, findings, rejected) -> str:
         sev = f["severity"]
         L.append(f"### 2.{i} {f['title']}\n")
         L.append(f"- **类型**：{f['vuln_type']}")
-        L.append(f"- **严重度**：{sev.get('level','?').upper()} (CVSS {sev.get('score','?')} `{f['cvss_vector']}`)")
+        L.append(f"- **严重度**：{sev.get('level','?').upper()} (CVSS v3.1 {sev.get('score','?')} `{f['cvss_vector']}`)")
+        if f.get("cvss_vector"):
+            from .severity import explain_vector
+            ex = explain_vector(f["cvss_vector"])
+            bd = "；".join(f"{m['label'].split(' (')[0]}={m['value_label'].split(' (')[0]}" for m in ex["metrics"])
+            L.append(f"  · **CVSS 向量说明**（据本漏洞具体情况评定）：{bd}")
         L.append(f"- **置信度**：{_CONF_LABEL.get(f['confidence'], f['confidence'])}")
         ev = f.get("evidence") or {}
         sink = ev.get("sink") or {}
@@ -129,6 +134,9 @@ def _markdown(proj, counts, depth, summary, findings, rejected) -> str:
     L.append("\n## 4. 方法与局限\n")
     L.append("- 采用「高召回发现 + 可达性闸门 + 独立双层验证」流水线；置信度分级如实标注。")
     L.append("- 动态验证针对可复现类漏洞在隔离沙箱中进行；逻辑类漏洞以静态数据流结论为准。")
+    L.append("- **严重度按 CVSS v3.1 基础分标准公式计算**；其向量（AV/AC/PR/UI/S/C/I/A）由验证官"
+             "**据每个漏洞的具体情况**评定（是否需鉴权、暴露面、是否需用户交互、能否越权、实际读/改/破坏影响），"
+             "而非套用漏洞类别的默认值——故同类漏洞在不同上下文下评分可不同。各项含义见每条漏洞下的「CVSS 向量说明」。")
     return "\n".join(L)
 
 

@@ -19,7 +19,7 @@ from ..db import session_scope
 from ..knowledge import SEVERITY_ORDER, rule_by_id
 from ..llm.gateway import llm
 from ..models import Artifact, EvidenceChain, Finding
-from ..severity import score_from_vector
+from ..severity import score_from_vector, valid_cvss
 from . import prompts, verify_tools
 from .context import AuditContext
 
@@ -298,7 +298,8 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
         verdict = {"verdict": v, "want_dynamic": False,
                    "confidence_reason": result.get("confidence_reason")
                    or result.get("evidence") or "深度核验：读全上下文并在常驻应用上实弹验证。",
-                   "poc": result.get("poc", ""), "remediation": result.get("remediation", "")}
+                   "poc": result.get("poc", ""), "remediation": result.get("remediation", ""),
+                   "cvss_vector": result.get("cvss_vector")}   # per-instance CVSS from the model
         if result.get("reproduced"):
             dynamic = {"attempted": True, "reproduced": True, "poc_code": result.get("poc", ""),
                        "request": None, "observation": result.get("evidence") or "验证官在常驻应用上实弹复现成功。",
@@ -363,7 +364,11 @@ async def _static_verify(ctx: AuditContext, run_id, c: dict, use_llm: bool) -> d
 
 async def _persist_finding(ctx, c, verdict, dynamic, confidence, seen_keys):
     rule = rule_by_id(c.get("rule_id", "")) or {}
-    vector = rule.get("cvss", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N")
+    # per-instance severity: use the CVSS vector the Validator tailored to THIS finding
+    # (auth/exposure/scope/impact) when it's well-formed; else fall back to the class default.
+    model_vec = (verdict or {}).get("cvss_vector")
+    vector = model_vec if valid_cvss(model_vec) else \
+        rule.get("cvss", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N")
     sev = score_from_vector(vector)
     dedup = _dedup(c)
     if dedup in seen_keys:

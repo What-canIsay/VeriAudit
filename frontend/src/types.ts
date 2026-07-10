@@ -72,11 +72,25 @@ export interface Finding {
   confidence: string;
   severity: { level?: string; score?: number; vector?: string };
   cvss_vector?: string;
+  cvss_explained?: CvssExplained | null;
   status: string;
   remediation?: string;
   evidence?: Evidence | null;
   artifacts?: Artifact[];
   created_at?: string;
+}
+
+export interface CvssMetric {
+  metric: string;
+  label: string;
+  value: string;
+  value_label: string;
+}
+export interface CvssExplained {
+  vector: string;
+  score: number;
+  level: string;
+  metrics: CvssMetric[];
 }
 
 export interface TimelineItem {

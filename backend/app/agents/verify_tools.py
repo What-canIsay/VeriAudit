@@ -110,6 +110,7 @@ TOOL_SCHEMAS: List[dict] = [
         "parameters": {"type": "object", "properties": {
             "verdict": {"type": "string", "description": "confirmed | suspected | rejected"},
             "reproduced": {"type": "boolean", "description": "是否在沙箱中真实触发/复现"},
+            "cvss_vector": {"type": "string", "description": "针对本漏洞【具体情况】的 CVSS v3.1 向量，形如 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N。请从该漏洞类别的基准出发，按你在核验中掌握的真实情况逐项调整：需登录才能触发→PR:L/H；仅内网/需本地→AV:A/L/P；需诱导用户点击→UI:R；能越权影响其他用户/组件→S:C；据实际能读取/篡改/破坏的程度定 C/I/A。仅在 verdict=confirmed/suspected 时给出。"},
             "confidence_reason": {"type": "string"},
             "poc": {"type": "string", "description": "精确、可复制运行的 PoC（完整请求含方法/路径/鉴权/参数/payload，或命令行）"},
             "remediation": {"type": "string"},

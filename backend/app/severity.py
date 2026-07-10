@@ -53,3 +53,47 @@ def level_for(score: float) -> str:
     if score < 9.0:
         return "high"
     return "critical"
+
+
+# --------------------------------------------------------------------------- #
+# CVSS v3.1 vector validation + human-readable decoding (for the finding detail + report).
+# --------------------------------------------------------------------------- #
+_METRIC_LABELS = {
+    "AV": ("攻击途径 (Attack Vector)", {"N": "网络 (Network)", "A": "相邻网络 (Adjacent)",
+                                        "L": "本地 (Local)", "P": "物理 (Physical)"}),
+    "AC": ("攻击复杂度 (Attack Complexity)", {"L": "低 (Low)", "H": "高 (High)"}),
+    "PR": ("所需权限 (Privileges Required)", {"N": "无 (None)", "L": "低 (Low)", "H": "高 (High)"}),
+    "UI": ("用户交互 (User Interaction)", {"N": "不需要 (None)", "R": "需要 (Required)"}),
+    "S": ("影响范围 (Scope)", {"U": "不变 (Unchanged)", "C": "改变 (Changed)"}),
+    "C": ("机密性影响 (Confidentiality)", {"H": "高 (High)", "L": "低 (Low)", "N": "无 (None)"}),
+    "I": ("完整性影响 (Integrity)", {"H": "高 (High)", "L": "低 (Low)", "N": "无 (None)"}),
+    "A": ("可用性影响 (Availability)", {"H": "高 (High)", "L": "低 (Low)", "N": "无 (None)"}),
+}
+_REQUIRED = ["AV", "AC", "PR", "UI", "S", "C", "I", "A"]
+
+
+def _parse_vector(vector: str) -> Dict[str, str]:
+    return dict(p.split(":", 1) for p in (vector or "").split("/") if ":" in p and not p.startswith("CVSS"))
+
+
+def valid_cvss(vector) -> bool:
+    """True if the string is a well-formed CVSS v3.x base vector (all 8 base metrics present
+    with legal values). Used to accept a model-produced per-instance vector or fall back."""
+    if not isinstance(vector, str):
+        return False
+    parts = _parse_vector(vector)
+    return all(m in parts and parts[m] in _METRIC_LABELS[m][1] for m in _REQUIRED)
+
+
+def explain_vector(vector: str) -> Dict[str, object]:
+    """Decode a CVSS vector into a labelled per-metric breakdown + score/level, so the UI and
+    report can EXPLAIN why a finding got its severity."""
+    parts = _parse_vector(vector)
+    metrics = []
+    for m in _REQUIRED:
+        v = parts.get(m)
+        label, vals = _METRIC_LABELS[m]
+        metrics.append({"metric": m, "label": label, "value": v or "?",
+                        "value_label": vals.get(v, "未知")})
+    sev = score_from_vector(vector)
+    return {"vector": vector, "score": sev["score"], "level": sev["level"], "metrics": metrics}

@@ -121,7 +121,8 @@ VALIDATOR_AGENTIC = (
     "判定标准：污点确从不可信输入无有效净化地到达危险汇聚点、且你已真实触发 → confirmed 且 reproduced=true；"
     "代码上成立但受客观条件（无法构造会话/缺依赖）未能触发 → confirmed 且 reproduced=false；"
     "证据不完整但不能排除 → suspected；确有净化/不可达/证伪 → rejected。"
-    "完成后调用 conclude 给出结论、是否复现、精确 PoC、修复建议与关键证据。"
+    "完成后调用 conclude 给出结论、是否复现、精确 PoC、修复建议与关键证据，"
+    "并【据本实例的真实情况给出 CVSS v3.1 向量 cvss_vector】（按是否需鉴权/暴露面/是否需用户交互/能否越权/实际影响调整各项，不要照抄类别默认值）。"
     "若核验途中【顺带发现与当前候选无关的其它漏洞】，用 report_incidental 登记它（不要用它给当前候选下结论），"
     "系统会把它作为新候选独立验证——发现即报，宁多勿漏。"
     "【经济高效】：目标明确，别为无关文件浪费步数；拿到决定性证据即 conclude。" + RED_LINE
@@ -132,6 +133,8 @@ VALIDATOR_JUDGE_INSTR = (
     "{\"verdict\": \"confirmed|suspected|rejected\", "
     "\"confidence_reason\": \"简要理由\", "
     "\"want_dynamic\": true/false, "
+    "\"cvss_vector\": \"据本实例情况的 CVSS v3.1 向量，如 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
+    "（按是否需鉴权/暴露面/用户交互/越权/实际影响调整，非成立可省略）\", "
     "\"poc\": \"可运行的PoC思路或利用请求\", "
     "\"remediation\": \"针对本项目上下文的具体修复建议\"}。"
 )

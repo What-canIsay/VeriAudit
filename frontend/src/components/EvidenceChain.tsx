@@ -1,6 +1,6 @@
 import {
   MapPin, ArrowDown, Radar, Crosshair, ShieldCheck, FlaskConical,
-  Wrench, Lightbulb, Terminal,
+  Wrench, Lightbulb, Terminal, Gauge,
 } from "lucide-react";
 import type { Finding } from "../types";
 import { SeverityBadge, ConfidenceBadge } from "./Badge";
@@ -26,6 +26,27 @@ export default function EvidenceChain({ f }: { f: Finding }) {
           </div>
         )}
       </div>
+
+      {/* CVSS v3.1 评分说明（据本漏洞具体情况评定） */}
+      {f.cvss_explained && (
+        <Section n="" title="CVSS v3.1 评分说明" icon={<Gauge className="w-3.5 h-3.5 text-medium" />}>
+          <div className="text-xs text-faint mb-2">
+            基础分 <span className="text-fg font-semibold">{f.cvss_explained.score}</span>
+            <span className="mx-1">·</span>{f.cvss_explained.level?.toUpperCase()}
+            <span className="mx-1">·</span>
+            <span className="font-mono">{f.cvss_explained.vector}</span>
+            <span className="ml-1 text-faint">（由验证官据本实例的鉴权/暴露面/影响调整，非类别默认值）</span>
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+            {f.cvss_explained.metrics.map((m) => (
+              <div key={m.metric} className="flex items-baseline justify-between gap-2 text-xs">
+                <span className="text-muted truncate">{m.label.split(" (")[0]}</span>
+                <span className="text-fg font-mono shrink-0">{m.value}=<span className="text-medium">{m.value_label.split(" (")[0]}</span></span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* ① 位置 */}
       <Section n="①" title="位置">
