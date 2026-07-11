@@ -78,10 +78,12 @@ _WEB_IMAGE_TAG = (f"{settings.sandbox_image_prefix}-env-"
 
 # Caps the persistent PROVISIONING container needs so `apt-get install` (dpkg chowns
 # files) and services that drop root (mysql/apache → setuid/setgid) actually work.
-# Everything else stays dropped; the container is still ephemeral, resource-capped,
-# network-limited, and has no host mount.
+# SYS_PTRACE lets the Validator drive gdb against the audited target — attach to a
+# standing daemon (gdb -p) and disable ASLR for reproducible crash addresses (launch+
+# debug already works without it). Everything else stays dropped; the container is still
+# ephemeral, resource-capped, network-limited, has its own PID namespace, and no host mount.
 _PROV_CAPS = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID",
-              "KILL", "SETPCAP", "NET_BIND_SERVICE"]
+              "KILL", "SETPCAP", "NET_BIND_SERVICE", "SYS_PTRACE"]
 
 
 def _marker() -> str:

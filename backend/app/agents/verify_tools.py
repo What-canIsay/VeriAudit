@@ -92,7 +92,7 @@ TOOL_SCHEMAS: List[dict] = [
             "session": {"type": "string", "description": "会话/角色名（如 admin、user）；复用预热阶段建立的登录态。留空=匿名会话。"}},
             "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "run_command", "description": "在沙箱容器内执行 shell 命令。可用于专业工具与运行时调试：sqlmap（SQL注入确认/取数）、nuclei（配置/暴露类模板验证）、curl、strace（观察 open/execve 系统调用）、mysql 客户端（查/建/seed 数据）、tail 应用/错误日志等。返回 stdout/stderr/exit_code。",
+        "name": "run_command", "description": "在沙箱容器内执行 shell 命令。可用于专业工具与运行时调试：sqlmap（SQL注入确认/取数）、nuclei（配置/暴露类模板验证）、curl、strace（观察 open/execve 系统调用）、gdb（batch 非交互模式定位原生崩溃的精确栈帧/寄存器/内存，如 `gdb -batch -ex run -ex bt --args ./目标 输入`，或 `gdb -batch -p PID ...` 附加常驻守护进程）、mysql 客户端（查/建/seed 数据）、tail 应用/错误日志等。返回 stdout/stderr/exit_code。",
         "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}},
     {"type": "function", "function": {
         "name": "sql_log", "description": "白盒 SQL 观测：开启/读取 MySQL 通用查询日志，用于直接看到 payload 产生的真实 SQL（对盲注/二阶注入是决定性证据）。action=start 先开启并清空；发送 payload 后 action=read 读取新增日志。mysql_auth 可传认证参数如 '-uroot' 或 '-uroot -pXXee'。",
