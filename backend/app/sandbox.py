@@ -21,10 +21,12 @@ Disk/security notes:
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import random
 import re
+import shlex
 import string
 import subprocess
 import tarfile
@@ -57,6 +59,10 @@ _WEB_DOCKERFILE = (
     "RUN apt-get update && apt-get install -y --no-install-recommends "
     "build-essential git curl wget unzip ca-certificates pkg-config procps "
     "strace default-mysql-client jq sqlmap "
+    # non-web dynamic verification: gcc's ASan (libasan, via build-essential) works out of
+    # the box; clang needs its compiler-rt (libclang-rt-dev) to link -fsanitize. gdb for
+    # crash triage; netcat/socat for raw TCP/UDP protocol interaction with network daemons.
+    "clang llvm libclang-rt-dev gdb netcat-openbsd socat "
     "&& rm -rf /var/lib/apt/lists/*\n"
     # nuclei: best-effort (build never fails if the download is unavailable)
     "RUN NURL=$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest "
@@ -416,6 +422,176 @@ def check_ready(env: dict, port: int, path: str = "/") -> dict:
 def probe_running(env: dict, path: str) -> str:
     r = exec_in(env, f"curl -s --max-time 8 'http://127.0.0.1:{env.get('port')}{path}'", 20)
     return r["stdout"]
+
+
+# --------------------------------------------------------------------------- #
+# Non-web dynamic verification primitives
+#   - network daemons speaking a NON-HTTP protocol (VPN mgmt / redis / smtp / custom
+#     TCP·UDP): net_interact() opens a socket, sends crafted bytes, reads the reply.
+#   - native / CLI / library targets (C·C++·Go·Rust binaries, parsers, harnesses):
+#     run_target() feeds crafted argv/stdin/input-files and captures structured
+#     crash evidence — terminating SIGNAL (SEGV/ABRT/…) and any ASan/UBSan report,
+#     which is DEFINITIVE dynamic proof of a memory-safety / UB vulnerability.
+# Both run inside the persistent provisioning container (python3 + clang/gdb/nc/socat
+# are pre-baked), so they need no host access.
+# --------------------------------------------------------------------------- #
+_SIGNALS = {2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL", 5: "SIGTRAP", 6: "SIGABRT",
+            7: "SIGBUS", 8: "SIGFPE", 9: "SIGKILL", 11: "SIGSEGV", 13: "SIGPIPE",
+            15: "SIGTERM"}
+# a terminating signal from one of these = a memory-safety / UB / arithmetic crash
+_CRASH_SIGNALS = {4, 6, 7, 8, 11}
+_SAN_MARKERS = (
+    "ERROR: AddressSanitizer", "AddressSanitizer", "SUMMARY: AddressSanitizer",
+    "UndefinedBehaviorSanitizer", "SUMMARY: UndefinedBehaviorSanitizer", "runtime error:",
+    "LeakSanitizer", "detected memory leaks", "heap-buffer-overflow", "stack-buffer-overflow",
+    "global-buffer-overflow", "heap-use-after-free", "use-after-free", "double-free",
+    "attempting double-free", "SEGV on unknown address", "stack-overflow",
+    "ThreadSanitizer", "data race",
+)
+
+
+def _classify_run(exit_code: Optional[int], out: str) -> dict:
+    """Turn a raw (exit_code, combined stdout+stderr) into structured crash/sanitizer
+    evidence. Pure function → unit-testable without Docker."""
+    info = {"exit_code": exit_code, "signal": None, "signal_name": None,
+            "crashed": False, "timed_out": False, "memory_error": False, "sanitizer": None}
+    if exit_code == 124:                      # coreutils `timeout` reached its limit (TERM)
+        info["timed_out"] = True
+    elif exit_code == 137:                    # timeout -s KILL had to hard-kill (hang)
+        info["timed_out"] = True
+    elif isinstance(exit_code, int) and exit_code > 128:
+        sig = exit_code - 128
+        info["signal"] = sig
+        info["signal_name"] = _SIGNALS.get(sig, f"SIG{sig}")
+        if sig in _CRASH_SIGNALS:
+            info["crashed"] = True
+    text = out or ""
+    hit = next((m for m in _SAN_MARKERS if m in text), None)
+    if hit:
+        info["memory_error"] = True
+        idx = text.find(hit)
+        info["sanitizer"] = text[max(0, idx - 60): idx + 1400]
+    return info
+
+
+def _net_interact(env: dict, port: int, proto: str = "tcp", payload_b64: str = "",
+                  read_timeout: float = 5.0, read_bytes: int = 65536) -> dict:
+    """Open a TCP/UDP socket to 127.0.0.1:port inside the container, optionally send a
+    crafted payload (base64 → raw bytes, so binary/quotes are safe), read the reply.
+    Driven by a python3 one-liner (python3 is in the base image)."""
+    proto = (proto or "tcp").lower()
+    py = (
+        "import socket,sys,base64,time\n"
+        f"data=base64.b64decode({payload_b64!r}) if {payload_b64!r} else b''\n"
+        f"proto={proto!r}; port={int(port)}; tout=float({float(read_timeout)}); cap={int(read_bytes)}\n"
+        "try:\n"
+        "  if proto=='udp':\n"
+        "    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(tout)\n"
+        "    s.sendto(data,('127.0.0.1',port))\n"
+        "    try: resp=s.recvfrom(cap)[0]\n"
+        "    except socket.timeout: resp=b''\n"
+        "  else:\n"
+        "    s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.settimeout(tout)\n"
+        "    s.connect(('127.0.0.1',port))\n"
+        "    if data: s.sendall(data)\n"
+        "    chunks=[]; end=time.time()+tout\n"
+        "    while time.time()<end:\n"
+        "      try:\n"
+        "        s.settimeout(max(0.1,end-time.time())); b=s.recv(4096)\n"
+        "      except socket.timeout: break\n"
+        "      if not b: break\n"
+        "      chunks.append(b)\n"
+        "      if sum(len(x) for x in chunks)>=cap: break\n"
+        "    resp=b''.join(chunks)\n"
+        "  sys.stdout.write('__NETOK__'+base64.b64encode(resp).decode())\n"
+        "except Exception as e:\n"
+        "  sys.stdout.write('__NETERR__'+repr(e))\n"
+    )
+    b64 = base64.b64encode(py.encode()).decode()
+    r = exec_in(env, f"echo {b64} | base64 -d | python3", int(read_timeout) + 15)
+    out = r.get("stdout", "") or ""
+    if "__NETOK__" in out:
+        enc = out.split("__NETOK__", 1)[1].strip()
+        try:
+            raw = base64.b64decode(enc)
+        except Exception:
+            raw = b""
+        return {"ok": True, "bytes": len(raw), "response_b64": enc,
+                "response": raw.decode("utf-8", "replace")[-4000:]}
+    if "__NETERR__" in out:
+        return {"ok": False, "error": out.split("__NETERR__", 1)[1].strip()[:400]}
+    return {"ok": False, "error": (r.get("stderr") or "无响应/连接失败")[:400]}
+
+
+def run_target(env: dict, cmd: str, stdin_b64: str = "", input_files: Optional[list] = None,
+               timeout: Optional[int] = None) -> dict:
+    """Run a command (the target binary / a small harness / a fuzz replay) inside the
+    container with crafted input, and return STRUCTURED crash evidence. Crafted input
+    files are materialized from base64 first (payloads never touch the shell). A
+    terminating SIGSEGV/SIGABRT or an AddressSanitizer/UBSan report is definitive
+    dynamic proof of a memory-safety / undefined-behaviour vulnerability."""
+    timeout = int(timeout or settings.sandbox_timeout_sec)
+    for f in (input_files or [])[:12]:
+        path = (f or {}).get("path")
+        content_b64 = (f or {}).get("content_b64", "")
+        if not path:
+            continue
+        exec_in(env, f"mkdir -p \"$(dirname {shlex.quote(path)})\" 2>/dev/null; "
+                     f"echo {shlex.quote(content_b64)} | base64 -d > {shlex.quote(path)}", 60)
+    stdin_part = f"echo {shlex.quote(stdin_b64)} | base64 -d | " if stdin_b64 else ""
+    # ASAN/UBSAN: symbolize + abort on error so the exit code carries the crash signal.
+    prelude = ("export ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:symbolize=1 "
+               "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1; ")
+    full = (f"{prelude}{stdin_part}timeout -s KILL {timeout} sh -c {shlex.quote(cmd)} 2>&1; "
+            f"echo __RC__$?")
+    r = exec_in(env, full, timeout + 25)
+    out = r.get("stdout", "") or ""
+    rc: Optional[int] = None
+    if "__RC__" in out:
+        out, _, tail = out.rpartition("__RC__")
+        try:
+            rc = int(re.match(r"\d+", tail.strip()).group())
+        except Exception:
+            rc = None
+    info = _classify_run(rc, out)
+    info["cmd"] = cmd
+    info["stdout"] = out[-4000:]
+    info["stderr"] = (r.get("stderr") or "")[-800:]
+    return info
+
+
+def _tcp_up(env: dict, port: int) -> bool:
+    return bool(_net_interact(env, port, "tcp", "", read_timeout=3, read_bytes=1024).get("ok"))
+
+
+def _udp_up(env: dict, port: int) -> bool:
+    """UDP is connectionless — readiness = a process has the port bound (kernel table)."""
+    hexport = f"{int(port):04X}"
+    r = exec_in(env, "cat /proc/net/udp /proc/net/udp6 2>/dev/null", 20)
+    return f":{hexport}" in (r.get("stdout", "") or "")
+
+
+def probe_ready(env: dict, port: Optional[int] = None, kind: str = "http",
+                proto: str = "tcp", path: str = "/", smoke_cmd: str = "") -> dict:
+    """Protocol/target-kind-aware readiness. Generalizes check_ready beyond HTTP so
+    non-web targets can be marked ready:
+      http    → HTTP status code responds (existing behavior)
+      network → TCP handshake succeeds / UDP port is bound
+      cli     → the target command is runnable (a crash still counts as 'runnable')"""
+    kind = (kind or "http").lower()
+    if kind == "network":
+        p = int(port or env.get("port") or 0)
+        up = _udp_up(env, p) if (proto or "tcp").lower() == "udp" else _tcp_up(env, p)
+        return {"up": up, "kind": "network", "proto": (proto or "tcp").lower(), "port": p}
+    if kind == "cli":
+        if smoke_cmd:
+            r = run_target(env, smoke_cmd, timeout=min(60, settings.sandbox_timeout_sec))
+            return {"up": r.get("exit_code") != 127, "kind": "cli",   # 127 = command not found
+                    "smoke": {k: r.get(k) for k in ("exit_code", "signal_name", "memory_error")}}
+        return {"up": True, "kind": "cli", "note": "CLI/原生目标无常驻服务，就绪=可执行目标命令"}
+    res = check_ready(env, int(port or env.get("port") or 0), path)
+    res["kind"] = "http"
+    return res
 
 
 def stop_persistent(env: Optional[dict]) -> None:

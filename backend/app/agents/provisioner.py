@@ -37,13 +37,16 @@ async def run(ctx: AuditContext) -> dict:
         return {"ready": False}
     ctx.state["env"] = env
     ctx.state["provision_runtime"] = runtime
-    # honest disclosure: node/php get a real deterministic path + full agentic repro; other
-    # runtimes (go/java/…) have no deterministic path and rely on the LLM apt-installing +
-    # building — flag that so the user isn't misled about dynamic-repro coverage.
+    # honest disclosure: python/node/php web apps get a zero-token deterministic boot; other
+    # targets (go/java/c/cpp/… — web, non-HTTP network daemons, or native/CLI programs) have no
+    # deterministic path and rely on the LLM to apt-install/build and stand them up. This is NO
+    # LONGER an HTTP-only limitation: the model can mark network daemons (net_send) and native/CLI
+    # targets (run_target, with sanitizer builds) ready too — flag only that it's model-driven.
     if runtime not in ("python", "node", "php"):
         await ctx.degrade("动态复现覆盖",
-                          f"主语言 {lang} 无确定性搭建路径：将尝试由模型自主 apt 安装运行时并构建；"
-                          f"若失败则回落静态结论（静态发现能力不受影响）。", "warn")
+                          f"主语言 {lang} 无确定性搭建路径：将由模型自主构建并按目标类别"
+                          f"（Web / 非 HTTP 网络守护进程 / 原生·CLI 程序）搭起来做动态验证；"
+                          f"若确实起不来则回落静态结论（静态发现能力不受影响）。", "warn")
 
     # 1) cheap deterministic attempt (zero-token)
     await ctx.think(run_id, "先尝试确定性搭建：检测框架/依赖并启动应用。")
@@ -166,10 +169,12 @@ def _llm_provision(ctx: AuditContext, run_id, env: dict, enrich: bool = False) -
                 "若应用在启动时缓存了连接，必要时先结束旧进程再用 start_app 重启。完成后 mark_ready(端口)。"
                 "请高效，无法完成就 give_up，不要反复打转。")
     else:
-        user = ("请让本项目在沙箱里跑起来（应用端口可访问）。优先使用项目自带的搭建配方"
-                "（docker-compose / Dockerfile / CI 工作流 / README / Makefile / 框架约定）。"
-                "需要数据库/迁移/seed/环境变量时，用 run_command 完成；用 start_app 启动；"
-                "check_ready 确认后 mark_ready(端口)。起不来就尽快 give_up。请高效，不要在同一错误上反复打转。")
+        user = ("请让本项目在沙箱里进入【可动态验证】的状态。先判断目标类别：Web 应用(http) / 非 HTTP 网络守护进程(network) / "
+                "原生·CLI 程序(cli)——不要默认它是 Web。优先使用项目自带的搭建配方"
+                "（docker-compose / Dockerfile / CI 工作流 / README / Makefile / configure / 框架约定）。"
+                "需要装依赖/编译/迁移/seed/环境变量时用 run_command；"
+                "http/network 用 start_app 启动、cli 用 run_command 构建(内存安全类加 -fsanitize=address,undefined -g)后 run_target 试跑；"
+                "确认后按类别调用 mark_ready。起不来就尽快 give_up。请高效，不要在同一错误上反复打转。")
 
     # rolling "is this build making productive progress" window → drives the one-time step
     # extension so a session that's close to booting the app isn't cut off at the last step.

@@ -100,6 +100,20 @@ TOOL_SCHEMAS: List[dict] = [
             "action": {"type": "string", "description": "start | read | stop"},
             "mysql_auth": {"type": "string"}}, "required": ["action"]}}},
     {"type": "function", "function": {
+        "name": "net_send", "description": "【非 HTTP 网络协议复现】向常驻守护进程的 127.0.0.1:port 发送自定义数据并读响应——用于 VPN 管理口/redis/SMTP/自定义 TCP·UDP 协议（http_probe 只能打 HTTP）。payload 传文本（行协议记得带 \\n），或 payload_b64 传原始字节 base64。构造畸形/越权/注入报文，据响应或行为判定漏洞。",
+        "parameters": {"type": "object", "properties": {
+            "port": {"type": "integer"}, "proto": {"type": "string", "description": "tcp（默认）| udp"},
+            "payload": {"type": "string"}, "payload_b64": {"type": "string"},
+            "read_timeout": {"type": "number"}}, "required": ["port"]}}},
+    {"type": "function", "function": {
+        "name": "run_target", "description": "【原生/CLI/库类目标的实弹复现】在容器内以自定义输入运行目标二进制或小型 harness，返回结构化崩溃证据：退出码、终止信号（SIGSEGV/SIGABRT/SIGFPE…）、AddressSanitizer/UBSan 报告。对内存安全/未定义行为类漏洞——【触发崩溃或 sanitizer 报告即为决定性动态复现证据】。强烈建议先用 run_command 以 -fsanitize=address,undefined -g 重编目标（或编一个只调用可疑函数的小 harness），再喂构造好的畸形输入。输入可经 stdin/stdin_b64 或 input_files([{path,content_b64}]) 落地。",
+        "parameters": {"type": "object", "properties": {
+            "cmd": {"type": "string", "description": "运行目标的命令，如 './target crash.bin' 或 './harness'"},
+            "stdin": {"type": "string"}, "stdin_b64": {"type": "string"},
+            "input_files": {"type": "array", "items": {"type": "object"},
+                            "description": "先落地的输入文件：[{path, content_b64}]"},
+            "timeout": {"type": "integer"}}, "required": ["cmd"]}}},
+    {"type": "function", "function": {
         "name": "report_incidental", "description": "【核验期间顺带发现一个与当前候选无关的新漏洞时调用】把它登记回候选池，供后续独立验证（不要用它给当前候选下结论——当前候选用 conclude）。发现即报，宁多勿漏，下游有独立验证。",
         "parameters": {"type": "object", "properties": {
             "vuln_type": {"type": "string", "description": "如 'CWE-89 SQL Injection'"},
@@ -270,6 +284,25 @@ def dispatch(env: dict, ctx, name: str, args: dict, sink: dict = None) -> dict:
 
     if name == "sql_log":
         return _sql_log(env, args.get("action", ""), args.get("mysql_auth", ""))
+
+    if name == "net_send":
+        if not env or not env.get("container"):
+            return {"error": "无常驻容器（环境未就绪？）"}
+        payload_b64 = args.get("payload_b64") or ""
+        if not payload_b64 and args.get("payload") is not None:
+            payload_b64 = base64.b64encode(str(args.get("payload")).encode("utf-8", "replace")).decode()
+        return sandbox._net_interact(env, int(args.get("port", env.get("port") or 0)),
+                                     proto=(args.get("proto") or "tcp"), payload_b64=payload_b64,
+                                     read_timeout=float(args.get("read_timeout") or 5))
+
+    if name == "run_target":
+        if not env or not env.get("container"):
+            return {"error": "无常驻容器（环境未就绪？）"}
+        stdin_b64 = args.get("stdin_b64") or ""
+        if not stdin_b64 and args.get("stdin") is not None:
+            stdin_b64 = base64.b64encode(str(args.get("stdin")).encode("utf-8", "replace")).decode()
+        return sandbox.run_target(env, args.get("cmd", ""), stdin_b64=stdin_b64,
+                                  input_files=args.get("input_files") or [], timeout=args.get("timeout"))
 
     if name == "report_incidental":
         return read_tools.record_incidental(ctx, args)

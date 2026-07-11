@@ -34,18 +34,42 @@ TOOL_SCHEMAS: List[dict] = [
         "name": "run_command", "description": "在沙箱容器内执行 shell 命令（装依赖/迁移/建库/seed 等）。工作目录为项目根。返回 stdout/stderr/exit_code。",
         "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}},
     {"type": "function", "function": {
-        "name": "start_app", "description": "在容器内后台启动应用，并检测端口是否就绪。返回是否就绪与日志尾部。",
+        "name": "start_app", "description": "在容器内后台启动一个常驻服务（Web 应用或网络守护进程），并检测端口是否就绪。返回是否就绪与日志尾部。CLI/原生二进制这类【非常驻】目标不用它——直接用 run_target 跑。",
         "parameters": {"type": "object", "properties": {
-            "command": {"type": "string", "description": "启动命令，如 'python app.py' 或 'python -m uvicorn main:app --host 127.0.0.1 --port 8000'"},
-            "port": {"type": "integer"}}, "required": ["command", "port"]}}},
+            "command": {"type": "string", "description": "启动命令，如 'python app.py'、'python -m uvicorn main:app --host 127.0.0.1 --port 8000'、或守护进程 './src/openvpn/openvpn --config ... --management 127.0.0.1 1195'"},
+            "port": {"type": "integer"},
+            "kind": {"type": "string", "description": "http（Web 应用，默认）| network（非 HTTP 协议的网络守护进程，如 VPN 管理口/redis/自定义 TCP·UDP）"},
+            "proto": {"type": "string", "description": "kind=network 时的协议：tcp（默认）| udp"}}, "required": ["command", "port"]}}},
     {"type": "function", "function": {
-        "name": "check_ready", "description": "检查应用在给定端口/路径是否已就绪（HTTP 可访问）。",
+        "name": "check_ready", "description": "检查目标是否就绪。kind=http：HTTP 可访问；kind=network：TCP 能连上 / UDP 端口已绑定；kind=cli：用 smoke_cmd 试跑目标命令是否可执行。",
         "parameters": {"type": "object", "properties": {
-            "port": {"type": "integer"}, "path": {"type": "string"}}, "required": ["port"]}}},
+            "port": {"type": "integer"}, "path": {"type": "string"},
+            "kind": {"type": "string", "description": "http（默认）| network | cli"},
+            "proto": {"type": "string", "description": "network 协议：tcp（默认）| udp"},
+            "smoke_cmd": {"type": "string", "description": "kind=cli 时，用来验证目标可执行的一条命令（如 './src/openvpn/openvpn --version'）"}}, "required": []}}},
     {"type": "function", "function": {
-        "name": "mark_ready", "description": "【应用已成功跑起来时调用】声明环境就绪，给出应用端口与可选的基础路径前缀。",
+        "name": "net_send", "description": "向容器内 127.0.0.1:port 的【网络端口】发送一段自定义数据并读取响应——用于非 HTTP 协议的守护进程（VPN 管理口/redis/SMTP/自定义二进制协议）。payload 为要发送的文本（或 payload_b64 传原始字节的 base64），返回响应文本与字节数。用它确认守护进程真的起来并能交互。",
         "parameters": {"type": "object", "properties": {
-            "port": {"type": "integer"}, "base_path": {"type": "string"}}, "required": ["port"]}}},
+            "port": {"type": "integer"}, "proto": {"type": "string", "description": "tcp（默认）| udp"},
+            "payload": {"type": "string", "description": "要发送的文本（行协议记得带换行 \\n）"},
+            "payload_b64": {"type": "string", "description": "要发送的原始字节的 base64（二进制协议用它，与 payload 二选一）"},
+            "read_timeout": {"type": "number"}}, "required": ["port"]}}},
+    {"type": "function", "function": {
+        "name": "run_target", "description": "在容器内运行目标二进制/脚本/小型 harness，喂入自定义输入，返回【结构化崩溃证据】：退出码、终止信号（SIGSEGV/SIGABRT 等）、以及 AddressSanitizer/UBSan 报告。用于原生/CLI/库类目标（C/C++/Go/Rust 解析器等）的动态复现——崩溃或 sanitizer 报告即是内存安全/未定义行为漏洞的决定性证据。构建可复现时建议先用 -fsanitize=address,undefined -g 重编目标。",
+        "parameters": {"type": "object", "properties": {
+            "cmd": {"type": "string", "description": "运行目标的命令，如 './target @@' 或 './parser input.bin'（工作目录为项目根）"},
+            "stdin": {"type": "string", "description": "从标准输入喂给目标的文本"},
+            "stdin_b64": {"type": "string", "description": "从标准输入喂给目标的原始字节 base64（二进制输入用它）"},
+            "input_files": {"type": "array", "description": "先落地的输入文件：[{path, content_b64}]，把构造好的畸形输入写到路径供 cmd 读取", "items": {"type": "object"}},
+            "timeout": {"type": "integer"}}, "required": ["cmd"]}}},
+    {"type": "function", "function": {
+        "name": "mark_ready", "description": "【目标已成功跑起来/可交互时调用】声明环境就绪。kind=http 给端口(+可选 base_path)；kind=network 给端口+proto；kind=cli 给 target_cmd（后续核验会怎么运行目标，如 './target @@'）+可选 smoke_cmd。",
+        "parameters": {"type": "object", "properties": {
+            "port": {"type": "integer"}, "base_path": {"type": "string"},
+            "kind": {"type": "string", "description": "http（默认）| network | cli"},
+            "proto": {"type": "string", "description": "network 协议：tcp（默认）| udp"},
+            "target_cmd": {"type": "string", "description": "kind=cli 时，后续核验运行目标的命令模板（如 './build/parser @@'，@@ 代表输入文件占位）"},
+            "smoke_cmd": {"type": "string", "description": "kind=cli 时用来确认可执行的命令"}}, "required": []}}},
     {"type": "function", "function": {
         "name": "give_up", "description": "【确实无法在预算内搭建时调用】放弃搭建并说明原因（下游将回落逐候选轻量复现/静态结论）。",
         "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}},
@@ -107,27 +131,64 @@ def dispatch(env: dict, ctx, name: str, args: dict) -> dict:
 
     if name == "start_app":
         cmd, port = args.get("command", ""), int(args.get("port", 0))
+        kind, proto = (args.get("kind") or "http"), (args.get("proto") or "tcp")
         sandbox.exec_detached(env, cmd)
         env["port"] = port
         ready = False
         import time as _t
         for _ in range(30):
-            if sandbox.check_ready(env, port)["up"]:
+            if sandbox.probe_ready(env, port, kind=kind, proto=proto)["up"]:
                 ready = True
                 break
             _t.sleep(0.5)
         log = sandbox.exec_in(env, "tail -c 500 /tmp/app.log", 20)["stdout"]
-        return {"started": True, "ready": ready, "port": port, "log": log}
+        return {"started": True, "ready": ready, "port": port, "kind": kind, "log": log}
 
     if name == "check_ready":
-        return sandbox.check_ready(env, int(args.get("port", env.get("port") or 0)),
-                                   args.get("path", "/"))
+        return sandbox.probe_ready(env, int(args.get("port", env.get("port") or 0)),
+                                   kind=(args.get("kind") or "http"),
+                                   proto=(args.get("proto") or "tcp"),
+                                   path=args.get("path", "/"), smoke_cmd=args.get("smoke_cmd", ""))
+
+    if name == "net_send":
+        payload_b64 = args.get("payload_b64") or ""
+        if not payload_b64 and args.get("payload") is not None:
+            import base64 as _b64
+            payload_b64 = _b64.b64encode(str(args.get("payload")).encode("utf-8", "replace")).decode()
+        return sandbox._net_interact(env, int(args.get("port", env.get("port") or 0)),
+                                     proto=(args.get("proto") or "tcp"), payload_b64=payload_b64,
+                                     read_timeout=float(args.get("read_timeout") or 5))
+
+    if name == "run_target":
+        stdin_b64 = args.get("stdin_b64") or ""
+        if not stdin_b64 and args.get("stdin") is not None:
+            import base64 as _b64
+            stdin_b64 = _b64.b64encode(str(args.get("stdin")).encode("utf-8", "replace")).decode()
+        return sandbox.run_target(env, args.get("cmd", ""), stdin_b64=stdin_b64,
+                                  input_files=args.get("input_files") or [],
+                                  timeout=args.get("timeout"))
 
     if name == "mark_ready":
-        env["port"] = int(args.get("port", env.get("port") or 0))
+        kind = (args.get("kind") or "http").lower()
+        proto = (args.get("proto") or "tcp").lower()
+        env["target_kind"] = kind
+        env["proto"] = proto
+        if "port" in args and args.get("port"):
+            env["port"] = int(args.get("port"))
         env["base_path"] = args.get("base_path", "") or ""
-        env["ready"] = bool(sandbox.check_ready(env, env["port"])["up"])
-        return {"ok": env["ready"], "note": ("环境就绪" if env["ready"] else "端口未响应，请先确认应用已启动")}
+        if kind == "cli":
+            env["target_cmd"] = args.get("target_cmd", "") or ""
+        res = sandbox.probe_ready(env, env.get("port"), kind=kind, proto=proto,
+                                  smoke_cmd=args.get("smoke_cmd", ""))
+        env["ready"] = bool(res.get("up"))
+        if env["ready"]:
+            note = {"http": "环境就绪（HTTP 可访问）", "network": f"环境就绪（{proto} 端口可交互）",
+                    "cli": "环境就绪（目标可执行，将以 run_target 逐个复现）"}[kind]
+        else:
+            note = {"http": "端口未响应 HTTP，请先确认应用已启动",
+                    "network": f"{proto} 端口未就绪，请确认守护进程已监听该端口",
+                    "cli": "目标命令不可执行（smoke_cmd 返回 127），请确认已构建"}[kind]
+        return {"ok": env["ready"], "kind": kind, "note": note}
 
     if name == "give_up":
         env["gaveup"] = args.get("reason", "unspecified")

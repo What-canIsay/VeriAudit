@@ -238,11 +238,12 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
         fw_note = (f"\n【这是逻辑类漏洞：{_rule.get('how_to_spot', '')}】"
                    f"确认思路：{_rule.get('poc_hint', '')}\n"
                    + (ctx.state.get("framework_guidance") or ""))
+    env_line = _env_desc(env)
     user = (f"待核验候选：{c['vuln_type']}\n位置：{sink['file']}:{sink['line']}\n"
             f"来源：{c.get('origin')}  自评置信度：{c.get('self_confidence')}\n"
             f"发现理由：{c.get('rationale', '')}\n污点线索：\n{_taint_text(c)}\n{cg_line}\n"
             f"sink 附近代码：\n{_code_window(ctx.root, c)}\n{fw_note}\n"
-            f"应用已在容器内运行（端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
+            f"{env_line}"
             + reuse +
             f"请深度核验并尽力实弹复现，最后调用 conclude（若你新建了可复用的账号/会话，请在 setup_notes 中说明）。")
     result: dict = {}
@@ -254,9 +255,14 @@ async def _agentic_verify(ctx: AuditContext, run_id, c: dict, env: dict, steps: 
             return False
         if name in ("http_probe", "sql_log"):
             return "error" not in res and res.get("exit_code", 0) != -1
+        if name == "net_send":                       # non-HTTP protocol interaction
+            return res.get("ok") is True
+        if name == "run_target":                     # native/CLI repro — a crash IS progress
+            return "error" not in res
         if name == "run_command":
             cmd = (args.get("cmd") or "").lower()
-            if any(k in cmd for k in ("sqlmap", "nuclei", "curl", "mysql")):
+            if any(k in cmd for k in ("sqlmap", "nuclei", "curl", "mysql", "nc ",
+                                      "-fsanitize", "gdb", "./")):
                 return res.get("exit_code", 0) != -1
         return False
 
@@ -436,6 +442,25 @@ def _code_window(root, c, ctx_lines: int = 18) -> str:
         return "\n".join(f"{i+1}: {lines[i]}" for i in range(a, b))[:4000]
     except Exception:
         return c["location"].get("snippet", "")
+
+
+def _env_desc(env: dict) -> str:
+    """Describe the standing target to the Validator by kind, so it reaches for the right
+    exploit primitive (http_probe vs net_send vs run_target)."""
+    env = env or {}
+    kind = (env.get("target_kind") or "http").lower()
+    if kind == "network":
+        proto = (env.get("proto") or "tcp").lower()
+        return (f"目标是【网络守护进程】，已在容器内监听 127.0.0.1:{env.get('port')}（{proto}，非 HTTP）。"
+                f"用 net_send(port={env.get('port')}, proto='{proto}', payload=...) 发送自定义协议报文来交互与复现；http_probe 不适用。")
+    if kind == "cli":
+        tc = env.get("target_cmd") or "（见项目构建产物）"
+        return (f"目标是【原生/CLI/库类程序】，无常驻服务。运行目标的方式：{tc}。"
+                f"用 run_target(cmd=..., stdin/stdin_b64/input_files=...) 喂构造好的畸形输入实弹复现——"
+                f"触发 SIGSEGV/SIGABRT 或 ASan/UBSan 报告即为决定性证据。"
+                f"建议先用 run_command 以 -fsanitize=address,undefined -g 重编目标或编一个只调用可疑函数的小 harness。")
+    return (f"目标应用已在容器内运行（HTTP，端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
+            f"用 http_probe 发精确请求复现。")
 
 
 def _taint_text(c) -> str:

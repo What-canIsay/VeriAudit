@@ -73,6 +73,12 @@ def _record_usage(role: str, messages: List[dict], resp, content: str,
         pass  # telemetry must never break the audit
 
 
+# in-loop resilience: a single transient LLM failure (timeout / 5xx / rate limit) must not
+# abort a long agentic session. Retry the step a few times before giving up.
+_STEP_RETRIES = 2
+_STEP_RETRY_SLEEP = 2.0
+
+
 class LLMGateway:
     def __init__(self) -> None:
         self.enabled = (not settings.mock_mode) and _HAS_LITELLM
@@ -152,6 +158,9 @@ class LLMGateway:
                 extend_when: Optional[Callable[[], bool]] = None,
                 extend_factor: float = 1.0,
                 extend_hard_cap: int = 0,
+                must_produce: Optional[Callable[[], bool]] = None,
+                harvest_prompt: Optional[str] = None,
+                max_finalize_nudges: int = 2,
                 checkpoint: Optional[Callable[[], bool]] = None) -> Tuple[Optional[str], List[dict]]:
         """Bounded tool-calling loop where the MODEL drives tool use.
 
@@ -167,6 +176,15 @@ class LLMGateway:
         and extend_when() reports the session is "promising" (e.g. mid-reproduction), the
         cap is raised ONCE to ceil(max_steps*extend_factor) (bounded by extend_hard_cap),
         so a nearly-done session isn't cut off. Fires at most once.
+
+        must_produce/harvest_prompt/max_finalize_nudges: for agents whose ENTIRE output is
+        side-effects via tool calls (the Hunter's report_candidate) rather than the return
+        value. If must_produce() is still False when the model tries to end — either by
+        returning a tool-less prose turn OR by exhausting the step budget — we inject
+        harvest_prompt and grant an extra turn (up to max_finalize_nudges) so the model
+        converts what it already found into tool calls, WITH full exploration context
+        intact. This fixes the observed failure where the Hunter examines 100+ files yet
+        commits zero candidates and the whole hunt is discarded.
         """
         if not self.enabled:
             return None, []
@@ -174,13 +192,22 @@ class LLMGateway:
         trace: List[dict] = []
         hinted = False
         extended = False
+        harvested = 0
         cap = max_steps
         i = 0
         while i < cap:
             # cooperative pause/cancel: blocks while paused, stops the loop on cancel.
             if checkpoint is not None and not checkpoint():
                 return None, trace
-            msg = self._call(role, messages, tools=tools, timeout=timeout, num_retries=num_retries)
+            # transient LLM failures (timeout / 5xx / rate limit) must not abort a long
+            # session — retry the step a few times before giving up.
+            msg = None
+            for _attempt in range(_STEP_RETRIES + 1):
+                msg = self._call(role, messages, tools=tools, timeout=timeout, num_retries=num_retries)
+                if msg is not None:
+                    break
+                if _attempt < _STEP_RETRIES:
+                    time.sleep(_STEP_RETRY_SLEEP * (_attempt + 1))
             if msg is None:
                 break
             reasoning = self._reasoning(msg)
@@ -189,6 +216,15 @@ class LLMGateway:
             if on_step:
                 on_step(reasoning, content, [tc.function.name for tc in tool_calls])
             if not tool_calls:
+                # model tried to end with prose. If it still owes tool output, don't discard
+                # its findings — nudge it to commit them (report_candidate) and continue.
+                if must_produce and not must_produce() and harvested < max_finalize_nudges:
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": harvest_prompt or finalize_hint or
+                                     "请立即用工具登记你的结论，不要只用文字叙述。"})
+                    harvested += 1
+                    i += 1
+                    continue
                 return content, trace
             messages.append({"role": "assistant", "content": content,
                              "tool_calls": [tc.model_dump() if hasattr(tc, "model_dump") else tc
@@ -227,6 +263,15 @@ class LLMGateway:
             if finalize_hint and not hinted and remaining <= finalize_at:
                 messages.append({"role": "user", "content": finalize_hint})
                 hinted = True
+            # guaranteed harvest tail: budget exhausted but the model still owes tool output
+            # (e.g. explored the whole project yet committed zero candidates) → grant a
+            # dedicated turn to commit its findings, bounded by max_finalize_nudges.
+            if (remaining <= 0 and must_produce and not must_produce()
+                    and harvested < max_finalize_nudges):
+                cap += 1
+                messages.append({"role": "user", "content": harvest_prompt or finalize_hint or
+                                 "步数已尽，请现在只用工具登记你已发现的每个候选，不要再探索。"})
+                harvested += 1
             i += 1
         return None, trace
 

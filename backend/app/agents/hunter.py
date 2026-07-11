@@ -145,11 +145,23 @@ def _llm_hunt(ctx: AuditContext, run_id: str) -> None:
     finalize_hint = ("步数即将用尽。请【立即停止探索、不要再读取新文件】，"
                      "现在就对你已经识别到的每一个可疑漏洞调用 report_candidate 逐个登记"
                      "（可连续多次调用）。宁可多报，下游有独立验证。")
+    # The Hunter's ENTIRE output is report_candidate side-effects. If a session ends with
+    # zero candidates (model narrated its findings in prose, or spent the whole budget
+    # exploring without committing), force a harvest turn instead of silently discarding
+    # everything and falling back to scanners.
+    harvest_prompt = (
+        "【必须现在登记】你还没有登记任何候选。基于你已经审阅过的全部代码，"
+        "现在【只做一件事】：对你认为可疑或值得核验的每一处，逐个调用 report_candidate 登记"
+        "（file/line/vuln_type/confidence/rationale，可连续多次调用）——不要用文字叙述、不要再读取新文件。"
+        "宁可多报（下游有独立验证会剔除误报），漏报比误报更严重。若审阅后确信全项目无任何可疑点，"
+        "也请调用一次 report_candidate 说明并给出你最不放心的那一处。")
     llm.agentic("hunter", prompts.HUNTER, user, tools.active_schemas(),
                 lambda n, a: tools.dispatch(ctx, n, a),
                 on_tool=on_tool, on_step=on_step,
                 max_steps=budget.get("llm_hunt_steps", settings.llm_hunt_steps),
                 finalize_hint=finalize_hint, finalize_at=3,
+                must_produce=lambda: bool(ctx.state.get("candidates")),
+                harvest_prompt=harvest_prompt, max_finalize_nudges=3,
                 timeout=budget.get("llm_timeout_sec"), num_retries=budget.get("llm_num_retries"),
                 checkpoint=ctx.control.checkpoint)
 
