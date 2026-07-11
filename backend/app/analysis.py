@@ -93,7 +93,10 @@ def _guess_frameworks(text: str) -> List[str]:
 def find_entrypoints(root: Path) -> List[dict]:
     eps: List[dict] = []
     for p, lang in iter_source_files(root):
-        patterns = LANGUAGE_ADAPTERS[lang]["entrypoints"]
+        adapter = LANGUAGE_ADAPTERS.get(lang)   # recognition-only langs (shell/rust/…) have none
+        if not adapter:
+            continue
+        patterns = adapter["entrypoints"]
         text = read_text(p)
         for i, line in enumerate(text.splitlines(), 1):
             for pat in patterns:

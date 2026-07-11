@@ -51,12 +51,50 @@ LANGUAGE_ADAPTERS: Dict[str, dict] = {
         "manifest": ["go.mod"],
         "sandbox": {"base": "golang:1.22", "install": "go mod download || true", "run": "go run ."},
     },
+    "c": {
+        "exts": [".c", ".h"],
+        "entrypoints": [r"int\s+main\s*\(", r"\bmain\s*\("],
+        "manifest": ["Makefile", "CMakeLists.txt", "configure.ac", "configure", "meson.build"],
+        "sandbox": {"base": "gcc:13", "install": "true", "run": "true"},
+    },
+    "cpp": {
+        "exts": [".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++"],
+        "entrypoints": [r"int\s+main\s*\("],
+        "manifest": ["CMakeLists.txt", "Makefile", "conanfile.txt", "meson.build"],
+        "sandbox": {"base": "gcc:13", "install": "true", "run": "true"},
+    },
+    "csharp": {
+        "exts": [".cs"],
+        "entrypoints": [r"\[Http(Get|Post|Put|Delete)\]", r"MapControllers", r"static\s+.*\bMain\s*\("],
+        "manifest": ["packages.config", "Directory.Build.props"],
+        "sandbox": {"base": "mcr.microsoft.com/dotnet/sdk:8.0", "install": "true", "run": "true"},
+    },
+    "ruby": {
+        "exts": [".rb", ".rake"],
+        "entrypoints": [r"\b(get|post|put|delete|patch)\s+['\"]/", r"class\s+\w+Controller"],
+        "manifest": ["Gemfile", "config.ru"],
+        "sandbox": {"base": "ruby:3.3-slim", "install": "bundle install || true", "run": "ruby app.rb"},
+    },
 }
 
 EXT_TO_LANG: Dict[str, str] = {}
 for _lang, _a in LANGUAGE_ADAPTERS.items():
     for _e in _a["exts"]:
         EXT_TO_LANG[_e] = _lang
+
+# Recognition-only extensions: languages we don't (yet) deeply analyze, but MUST still SEE — so a
+# project is never mis-detected as "a few stray files". These get counted, profiled, read by the
+# Hunter, and indexed for RAG. (Call-graph spans additionally require a tree-sitter grammar; those
+# that have one are wired in callgraph._TS_LANG.)
+_EXTRA_EXTS: Dict[str, str] = {
+    ".rs": "rust", ".kt": "kotlin", ".kts": "kotlin", ".swift": "swift", ".scala": "scala",
+    ".m": "objc", ".mm": "objc", ".ex": "elixir", ".exs": "elixir", ".erl": "erlang",
+    ".hs": "haskell", ".lua": "lua", ".pl": "perl", ".pm": "perl", ".r": "r", ".dart": "dart",
+    ".vue": "javascript", ".svelte": "javascript",
+    ".sh": "shell", ".bash": "shell", ".ps1": "powershell", ".sql": "sql",
+}
+for _e, _l in _EXTRA_EXTS.items():
+    EXT_TO_LANG.setdefault(_e, _l)
 
 # Untrusted input markers (taint sources) per language.
 SOURCES: Dict[str, List[str]] = {

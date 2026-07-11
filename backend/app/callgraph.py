@@ -56,6 +56,13 @@ _FUNC_TYPES = {
     "php": {"function_definition", "method_declaration"},
     "go": {"function_declaration", "method_declaration"},
     "java": {"method_declaration", "constructor_declaration"},
+    "c": {"function_definition"},
+    "cpp": {"function_definition"},
+    "csharp": {"method_declaration", "constructor_declaration", "local_function_statement"},
+    "ruby": {"method", "singleton_method"},
+    "rust": {"function_item"},
+    "kotlin": {"function_declaration"},
+    "swift": {"function_declaration"},
 }
 _CALL_TYPES = {
     "python": {"call"},
@@ -65,9 +72,18 @@ _CALL_TYPES = {
             "object_creation_expression"},
     "go": {"call_expression"},
     "java": {"method_invocation", "object_creation_expression"},
+    "c": {"call_expression"},
+    "cpp": {"call_expression", "new_expression"},
+    "csharp": {"invocation_expression", "object_creation_expression"},
+    "ruby": {"call", "method_call", "command"},
+    "rust": {"call_expression", "macro_invocation"},
+    "kotlin": {"call_expression"},
+    "swift": {"call_expression"},
 }
 _TS_LANG = {"python": "python", "javascript": "javascript", "typescript": "typescript",
-            "php": "php", "go": "go", "java": "java"}
+            "php": "php", "go": "go", "java": "java",
+            "c": "c", "cpp": "cpp", "csharp": "csharp", "ruby": "ruby",
+            "rust": "rust", "kotlin": "kotlin", "swift": "swift"}
 
 # module-level cache: str(root) -> Graph | None (None = build failed, use heuristic)
 _CACHE: Dict[str, "Graph"] = {}
@@ -244,7 +260,25 @@ def _node_name(node) -> Optional[str]:
     n = node.child_by_field_name("name")
     if n is not None:
         return n.text.decode("utf-8", "replace")
-    for ch in node.children:                       # fallback: first identifier-ish child
+    # C / C++: the name is nested inside the `declarator` (function_declarator → … → identifier),
+    # so it is NOT a direct child. Walk the declarator chain down to the first identifier.
+    d = node.child_by_field_name("declarator")
+    hops = 0
+    while d is not None and hops < 8:
+        hops += 1
+        if d.type in ("identifier", "field_identifier", "type_identifier", "operator_name",
+                      "destructor_name", "qualified_identifier"):
+            # for a qualified name (Class::method) take the last identifier token
+            last = None
+            stack = [d]
+            while stack:
+                c = stack.pop()
+                if "identifier" in c.type:
+                    last = c.text.decode("utf-8", "replace")
+                stack.extend(c.children)
+            return last or d.text.decode("utf-8", "replace")
+        d = d.child_by_field_name("declarator")
+    for ch in node.children:                       # generic fallback: first identifier-ish child
         if "identifier" in ch.type or ch.type == "name":
             return ch.text.decode("utf-8", "replace")
     return None
