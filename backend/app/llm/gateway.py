@@ -12,9 +12,14 @@ provider returns it, e.g. DeepSeek) so it can be streamed to the UI.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import re
+import threading
+import time
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..config import settings
@@ -26,6 +31,46 @@ try:
     _HAS_LITELLM = True
 except Exception:  # pragma: no cover
     _HAS_LITELLM = False
+
+
+# --- optional audit sink: record REAL per-call token usage from the provider response.
+# Enabled only when VERIAUDIT_LLM_USAGE_LOG points at a file. Append-only JSONL; never
+# raises into the request path. Used to build eval datasets from measured (not guessed) data.
+_USAGE_LOCK = threading.Lock()
+
+
+def _record_usage(role: str, messages: List[dict], resp, content: str,
+                  latency_ms: int, status: str, error: Optional[str]) -> None:
+    path = os.environ.get("VERIAUDIT_LLM_USAGE_LOG")
+    if not path:
+        return
+    try:
+        usage = getattr(resp, "usage", None) if resp is not None else None
+        def _u(k):
+            v = getattr(usage, k, None) if usage is not None else None
+            if v is None and isinstance(usage, dict):
+                v = usage.get(k)
+            return int(v) if isinstance(v, (int, float)) else None
+        prompt_text = json.dumps(messages, ensure_ascii=False)
+        rec = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "model": getattr(resp, "model", None),
+            "prompt_hash": "sha256:" + hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+            "response_hash": ("sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()) if content else None,
+            "input_tokens": _u("prompt_tokens"),
+            "output_tokens": _u("completion_tokens"),
+            "total_tokens": _u("total_tokens"),
+            "latency_ms": latency_ms,
+            "status": status,
+            "error": error,
+        }
+        line = json.dumps(rec, ensure_ascii=False)
+        with _USAGE_LOCK:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass  # telemetry must never break the audit
 
 
 class LLMGateway:
@@ -66,11 +111,17 @@ class LLMGateway:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        t0 = time.monotonic()
         try:
             resp = litellm.completion(**kwargs)  # type: ignore
-            return resp.choices[0].message
+            msg = resp.choices[0].message
+            _record_usage(role, messages, resp, getattr(msg, "content", "") or "",
+                          int((time.monotonic() - t0) * 1000), "success", None)
+            return msg
         except Exception as e:
             self.last_error = str(e)[:300]
+            _record_usage(role, messages, None, "",
+                          int((time.monotonic() - t0) * 1000), "failed", str(e)[:300])
             return None
 
     def judge_ex(self, role: str, system: str, user: str,
@@ -148,7 +199,12 @@ class LLMGateway:
                     args = json.loads(tc.function.arguments or "{}")
                 except Exception:
                     args = {}
-                result = dispatch(fn, args)
+                # a single malformed tool call must never crash the whole audit — surface the
+                # error back to the model as a tool result so it can adjust and continue.
+                try:
+                    result = dispatch(fn, args)
+                except Exception as e:
+                    result = {"error": f"tool '{fn}' failed: {type(e).__name__}: {str(e)[:200]}"}
                 if on_tool:
                     on_tool(fn, args, result)
                 trace.append({"tool": fn, "args": args})

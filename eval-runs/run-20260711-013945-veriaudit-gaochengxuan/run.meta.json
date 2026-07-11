@@ -1,0 +1,23 @@
+{
+  "schema_version": "eval-result-contract-v1",
+  "run_id": "run-20260711-013945-veriaudit-gaochengxuan",
+  "member": "gaochengxuan",
+  "tool": "VeriAudit",
+  "tool_version": "git:6e75391-dirty",
+  "target_id": "基线测试",
+  "target_path_or_url": "D:/my_allkinds_document/aaDa3_xia/BenchmarkPython/BenchmarkPython",
+  "target_snapshot_hash": "a4567ea5977c",
+  "model_provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "temperature": null,
+  "max_llm_calls": null,
+  "max_wall_time_sec": null,
+  "max_cost_usd": null,
+  "start_time": "2026-07-11T01:40:17.642600+08:00",
+  "end_time": "2026-07-11T02:55:55.976734+08:00",
+  "wall_time_sec": 4538.3,
+  "exit_code": 0,
+  "status": "success",
+  "output_dir": "eval-runs/run-20260711-013945-veriaudit-gaochengxuan",
+  "notes": "深度审计 OWASP BenchmarkPython；temperature 由 provider 默认（系统未显式设 0）；token 为 API 实测，成本因缺官方单价留空。"
+}

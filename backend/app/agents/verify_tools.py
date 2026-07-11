@@ -20,6 +20,7 @@ persistent provisioning container via docker exec. Everything stays in the sandb
 from __future__ import annotations
 
 import base64
+import json
 from typing import List
 
 from .. import sandbox
@@ -154,12 +155,46 @@ def _b64(s: str) -> str:
     return base64.b64encode((s or "").encode("utf-8", "replace")).decode("ascii")
 
 
-def _curl_config(method: str, url: str, headers: dict, body: str) -> str:
+def _as_headers(h) -> dict:
+    """Coerce a model-supplied `headers` value into a dict. The LLM sometimes passes a JSON
+    string, a "Key: Value" block, or a list instead of an object — tolerate all of these so a
+    single malformed tool argument can never crash the verification phase."""
+    if isinstance(h, dict):
+        return h
+    if isinstance(h, str):
+        s = h.strip()
+        if not s:
+            return {}
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+        out = {}
+        for line in s.splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                out[k.strip()] = v.strip()
+        return out
+    if isinstance(h, (list, tuple)):
+        out = {}
+        for item in h:
+            if isinstance(item, str) and ":" in item:
+                k, v = item.split(":", 1)
+                out[k.strip()] = v.strip()
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                out[str(item[0])] = str(item[1])
+        return out
+    return {}
+
+
+def _curl_config(method: str, url: str, headers, body: str) -> str:
     """Build a curl config file (-K) so arbitrary payloads/quotes never touch the shell."""
     def esc(v: str) -> str:
         return str(v).replace("\\", "\\\\").replace('"', '\\"')
     lines = [f'url = "{esc(url)}"', f'request = "{esc(method or "GET")}"']
-    for k, v in (headers or {}).items():
+    for k, v in _as_headers(headers).items():
         lines.append(f'header = "{esc(k)}: {esc(v)}"')
     if body:
         lines.append(f'data = "{esc(body)}"')
