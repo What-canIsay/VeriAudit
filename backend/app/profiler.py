@@ -201,8 +201,9 @@ def assess(root: Path, depth: str) -> Tuple[Dict, Dict]:
     preheat_alloc = budget["preheat_max_steps"] * 8 if (agentic_on and settings.enable_provisioner_preheat) else 0
     provision_alloc = budget["provisioner_timeout_sec"] if depth == "deep" else 0
     task_timeout = 600 + hunt_alloc + verify_alloc + preheat_alloc + provision_alloc + 300
+    task_timeout_cap = max(_CEIL["task_timeout_sec"], fl.task_timeout_sec)
     budget["task_timeout_sec"] = int(max(fl.task_timeout_sec,
-                                         min(_CEIL["task_timeout_sec"], task_timeout)))
+                                         min(task_timeout_cap, task_timeout)))
 
     if not getattr(settings, "enable_adaptive_budget", True):
         budget = _static_budget(depth)
