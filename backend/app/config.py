@@ -131,7 +131,9 @@ class Settings(BaseSettings):
     enable_joern_callgraph: bool = True
     joern_dir: str = ""                   # path to joern-cli (auto-detect if empty)
     joern_java_home: str = ""             # JDK 17+ for joern (auto-detect if empty)
-    joern_timeout_sec: int = 420          # per joern step timeout (parse/query)
+    joern_timeout_sec: int = 420          # per joern QUERY step timeout floor (scaled by size)
+    joern_build_timeout_sec: int = 600    # base-CPG build cap (--nooverlays → fast); safety net only
+    joern_ram_mb: int = 4096              # JVM heap for joern-parse (php2cpg etc. are memory-heavy)
     enable_secret_scan: bool = True       # secret_scan   (gitleaks)
     enable_dependency_scan: bool = True   # dependency_scan (osv-scanner)
     scanner_timeout_sec: int = 180

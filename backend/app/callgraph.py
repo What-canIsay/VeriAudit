@@ -444,6 +444,28 @@ def _codeql_db_timeout(root: Path) -> int:
     return int(min(2400, max(base, 300 + n)))
 
 
+def _source_count(root: Path) -> int:
+    try:
+        return sum(1 for _ in analysis.iter_source_files(root))
+    except Exception:
+        return 0
+
+
+def _joern_build_timeout(root: Path) -> int:
+    """We build the BASE CPG only (`--nooverlays`), i.e. just the frontend parse — this is fast
+    and bounded (MacCMS v10, 715 PHP files: ~26s). The previous multi-minute "hang" was NOT the
+    parse; it was joern-parse's default *dataflow* overlay (ReachingDef) OOM/GC-thrashing, which
+    we now skip. So keep a MODEST cap (it's only a safety net; build returns as soon as done)."""
+    base = int(getattr(settings, "joern_build_timeout_sec", 600))
+    return int(min(1200, max(base, 120 + _source_count(root))))
+
+
+def _joern_query_timeout(root: Path) -> int:
+    """A large CPG takes longer to import + traverse. Scale the query timeout too (floor = the
+    configured per-step timeout)."""
+    return int(min(1800, max(int(settings.joern_timeout_sec), 240 + _source_count(root))))
+
+
 def _codeql_db(root: Path, cql_lang: str, codeql: str) -> Optional[Path]:
     cache = DATA_DIR / "codeql" / (hashlib.md5(str(root).encode()).hexdigest()[:12] + "-" + cql_lang)
     if _db_complete(cache):
@@ -533,6 +555,10 @@ def _joern_env(java: Path):
         if Path(tool).exists():
             extra.append(tool)
     env["PATH"] = os.pathsep.join(extra) + os.pathsep + env.get("PATH", "")
+    # Fail FAST on heap exhaustion (any joern JVM: build, edge query, or the dataflow overlay)
+    # instead of GC-thrashing for tens of minutes. This is language-agnostic and is what turns a
+    # "long silent hang" into a quick, clean degrade. Applies to every joern subprocess.
+    env["JAVA_TOOL_OPTIONS"] = (env.get("JAVA_TOOL_OPTIONS", "") + " -XX:+ExitOnOutOfMemoryError").strip()
     return env
 
 
@@ -552,17 +578,44 @@ def _ensure_joern_cpg(root: Path):
     cache = DATA_DIR / "joern" / (hashlib.md5(str(root).encode()).hexdigest()[:12])
     cache.parent.mkdir(parents=True, exist_ok=True)
     cpg = cache.with_suffix(".cpg.bin")
+    # a sibling ".ok" marker is written ONLY after a fully successful build. Presence of the
+    # .cpg.bin alone is NOT enough (a timed-out joern-parse leaves a partial file that would
+    # otherwise be reused forever → permanent Tree-sitter degrade). Mirrors CodeQL _db_complete.
+    marker = cache.with_suffix(".cpg.ok")
     env = _joern_env(java)
-    if not cpg.exists():
+    if not (cpg.exists() and marker.exists()):
         with _CPG_LOCK:   # build the CPG once even under parallel dataflow
-            if not cpg.exists():
+            if not (cpg.exists() and marker.exists()):
+                for p in (cpg, marker):   # clear any half-built leftover before (re)building
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+                # give the build JVM (and the interpreter it forks, e.g. php2cpg) enough heap;
+                # JAVA_TOOL_OPTIONS is honored by every JVM the launcher spawns. Only the build
+                # gets the big heap — queries reuse the cached CPG with the default env.
+                build_env = dict(env)
+                heap = int(getattr(settings, "joern_ram_mb", 4096))
+                build_env["JAVA_TOOL_OPTIONS"] = (build_env.get("JAVA_TOOL_OPTIONS", "") + f" -Xmx{heap}m").strip()
+                ok = False
                 try:
-                    subprocess.run(_joern_launch(joern, "joern-parse") + [str(root), "-o", str(cpg)],
-                                   env=env, capture_output=True, timeout=settings.joern_timeout_sec)
+                    # --nooverlays: build the BASE CPG only (call edges + the frontend's own
+                    # linking). We SKIP joern-parse's default *dataflow* overlay (ReachingDef),
+                    # which OOM/GC-thrashes on large or pathological code (e.g. MacCMS's 1.4MB IP
+                    # array file) and was the true cause of the multi-minute hangs. The taint
+                    # dataflow query applies its own bounded `run.ossdataflow` only when needed.
+                    subprocess.run(_joern_launch(joern, "joern-parse") + ["--nooverlays", str(root), "-o", str(cpg)],
+                                   env=build_env, capture_output=True, timeout=_joern_build_timeout(root))
+                    ok = cpg.exists() and cpg.stat().st_size > 4096
                 except Exception:
+                    ok = False
+                if not ok:
+                    try:
+                        cpg.unlink()
+                    except Exception:
+                        pass
                     return None
-                if not cpg.exists():
-                    return None
+                marker.write_text("ok", encoding="utf-8")
     return cpg, joern, java, env
 
 
@@ -588,7 +641,7 @@ def _joern_edges(root: Path, lang: str):
             '  }\n'
             '}\n', encoding="utf-8")
         r = subprocess.run(_joern_launch(joern, "joern") + ["--script", str(script)],
-                           env=env, capture_output=True, timeout=settings.joern_timeout_sec)
+                           env=env, capture_output=True, timeout=_joern_query_timeout(root))
         rows = []
         for line in (r.stdout or b"").decode("utf-8", "replace").splitlines():
             if line.startswith("EDGE\t"):
@@ -712,7 +765,7 @@ def _joern_dataflow(root: Path, from_file: str, from_line: int, to_file: str, to
         '}\n', encoding="utf-8")
     try:
         r = subprocess.run(_joern_launch(joern, "joern") + ["--script", str(script)],
-                           env=env, capture_output=True, timeout=settings.joern_timeout_sec)
+                           env=env, capture_output=True, timeout=_joern_query_timeout(root))
         out = (r.stdout or b"").decode("utf-8", "replace")
     except Exception:
         return {"available": True, "error": "数据流查询超时/失败（该项目可能过大）；请 read_file 人工判断。",
