@@ -73,6 +73,7 @@ async def run(ctx: AuditContext) -> dict:
 
 
 _CG_ENGINE_DESC = {
+    "codeql-manual": "CodeQL（人工离线构建，精度最高——含编译型语言；仅调用边，逐点污点用 cg_reachable+read_file）",
     "codeql": "CodeQL（语义级数据流，精度最高）",
     "joern": "Joern（CPG 跨过程，精度高、多语言）",
     "treesitter": "Tree-sitter（按函数名解析，精度有限、可能有较多假边——尤其要 read_file 核实）",

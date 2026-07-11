@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -117,6 +119,10 @@ class Graph:
         self.edges = new_edges
         self.callsites = new_cs
         self.engine = engine
+        self._finalize()   # rebuild reverse edges + roots so cg_callers / reachability match
+
+    def edge_count(self) -> int:
+        return sum(len(v) for v in self.edges.values())
         self._finalize()
 
     def _callsite(self, a: tuple, b: tuple) -> Optional[int]:
@@ -328,10 +334,250 @@ def _build_ts(root: Path) -> Optional[Graph]:
     return g if g.funcs else None
 
 
+# --------------------------------------------------------------------------- #
+# Manual call graph: the operator builds the graph/DB OFFLINE and hands it to the system
+# BEFORE the audit; get_graph()/status()/dataflow() consume it INSTEAD of the deterministic
+# ladder. Sidesteps the low success rate of unattended CodeQL/Joern. Two delivery forms,
+# auto-detected from the given path:
+#   • a FILE / directory of JSONL  → language-AGNOSTIC (works for PHP etc.): edges.jsonl gives
+#     the call graph; optional dataflow.jsonl gives pre-computed source→sink taint flows.
+#   • a directory that IS a CodeQL database (has codeql-database.yml) → the STRONGER option for
+#     CodeQL languages: the system runs its bundled calls.ql / dataflow.ql against the live DB,
+#     so BOTH the call graph and on-demand taint come from CodeQL (incl. compiled languages).
+# --------------------------------------------------------------------------- #
+_MANUAL: Dict[str, dict] = {}   # root -> resolved manual source (see _resolve_manual)
+
+
+def _db_language(db: Path) -> Optional[str]:
+    """Read the CodeQL DB's primaryLanguage from codeql-database.yml (no guessing needed)."""
+    try:
+        text = (Path(db) / "codeql-database.yml").read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"primaryLanguage:\s*[\"']?([A-Za-z0-9_+#-]+)", text)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
+
+
+def _resolve_manual(path: str) -> dict:
+    """Classify the operator-supplied path → {mode, ...}. A directory containing
+    codeql-database.yml is a live CodeQL DB; anything else is a JSONL delivery (a bundle dir
+    with edges.jsonl/dataflow.jsonl, or a single edges file with an optional sibling dataflow)."""
+    p = Path(path)
+    if p.is_dir():
+        if (p / "codeql-database.yml").exists():
+            return {"mode": "codeql_db", "db": p, "cql_lang": _db_language(p), "raw": str(p)}
+        e, d = p / "edges.jsonl", p / "dataflow.jsonl"
+        return {"mode": "jsonl", "edges": (e if e.exists() else None),
+                "dataflow": (d if d.exists() else None), "raw": str(p)}
+    # a file → treat as the edges file; pick up a sibling dataflow.jsonl if present
+    d = p.parent / "dataflow.jsonl"
+    return {"mode": "jsonl", "edges": (p if p.exists() else None),
+            "dataflow": (d if d.exists() else None), "raw": str(p)}
+
+
+def set_manual(root: Path, path: str) -> None:
+    with _GRAPH_LOCK:
+        _MANUAL[str(root)] = _resolve_manual(path)
+        _CACHE.pop(str(root), None)       # force a rebuild that uses the manual source
+
+
+def clear_manual(root: Path) -> None:
+    with _GRAPH_LOCK:
+        man = _MANUAL.pop(str(root), None)
+        _CACHE.pop(str(root), None)
+        if man and man.get("raw"):
+            _MANUAL_DF_CACHE.pop(man["raw"], None)
+
+
+def _load_manual_dataflow(path: Path) -> List[dict]:
+    """Parse dataflow.jsonl → list of pre-computed taint flows. Each line:
+    {source_file, source_line, sink_file, sink_line, [path:[...]], [note]}. Robust; never raises."""
+    out: List[dict] = []
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return out
+    s = text.strip()
+    recs: List = []
+    if s.startswith("["):
+        try:
+            arr = json.loads(s)
+            if isinstance(arr, list):
+                recs = arr
+        except Exception:
+            recs = []
+    if not recs:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            try:
+                recs.append(json.loads(line))
+            except Exception:
+                pass
+    for r in recs:
+        if isinstance(r, dict) and r.get("source_file") and r.get("sink_file"):
+            out.append(r)
+    return out
+
+
+def _manual_df_lookup(flows: List[dict], ff: str, fl: int, tf: str, tl: int) -> Optional[dict]:
+    """Does a pre-computed flow connect (ff:fl) → (tf:tl)? Match by path suffix + line ±2."""
+    def _m(a_file, a_line, q_file, q_line) -> bool:
+        a = str(a_file or "").replace("\\", "/")
+        q = str(q_file or "").replace("\\", "/")
+        try:
+            near = abs(int(a_line) - int(q_line)) <= 2
+        except Exception:
+            near = True
+        return bool(a and q and (a.endswith(q) or q.endswith(a)) and near)
+    for r in flows:
+        if _m(r.get("source_file"), r.get("source_line"), ff, fl) and \
+           _m(r.get("sink_file"), r.get("sink_line"), tf, tl):
+            return r
+    return None
+
+
+def _manual_edges(path: str) -> tuple:
+    """Parse a human-provided call-graph edges file → (edge_tuples, meta). Accepts JSONL (one
+    edge object per line; # / // comments and blanks skipped) OR a single top-level JSON array.
+    Each edge: caller_file, caller_line, caller_func, callee_file, callee_line, callee_func,
+    [call_site_line]. Robust: malformed records are skipped and counted; never raises."""
+    p = Path(path)
+    meta = {"path": str(p), "parsed": 0, "skipped": 0, "resolved_edges": 0, "error": None, "failed": False}
+    if not p.exists():
+        meta["error"] = f"手动调用图文件不存在：{path}"
+        meta["failed"] = True
+        return [], meta
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        meta["error"] = f"读取手动调用图文件失败：{str(e)[:160]}"
+        meta["failed"] = True
+        return [], meta
+    records: List = []
+    s = text.strip()
+    if s.startswith("["):
+        try:
+            arr = json.loads(s)
+            if isinstance(arr, list):
+                records = arr
+        except Exception:
+            records = []
+    if not records:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+            try:
+                records.append(json.loads(line))
+            except Exception:
+                meta["skipped"] += 1
+
+    def _p(x):
+        return str(x or "").replace("\\", "/").lstrip("/")
+
+    tuples: List[tuple] = []
+    for r in records:
+        if not isinstance(r, dict):
+            meta["skipped"] += 1
+            continue
+        try:
+            cf, ef = _p(r.get("caller_file")), _p(r.get("callee_file"))
+            cn = str(r.get("caller_func") or r.get("caller_name") or "").strip()
+            en = str(r.get("callee_func") or r.get("callee_name") or "").strip()
+            cl, el = int(r.get("caller_line")), int(r.get("callee_line"))
+            cs = r.get("call_site_line", r.get("call_line", -1))
+            cs = int(cs) if str(cs).lstrip("-").isdigit() else -1
+            if cf and cn and ef and en:
+                tuples.append((cf, cl, cn, ef, el, en, cs))
+                meta["parsed"] += 1
+            else:
+                meta["skipped"] += 1
+        except Exception:
+            meta["skipped"] += 1
+    if not tuples and not meta["error"]:
+        meta["error"] = "手动调用图文件未解析出任何合法边（检查 JSONL 格式与必填字段）。"
+        meta["failed"] = True
+    return tuples, meta
+
+
+def _manual_call_edges(man: dict) -> tuple:
+    """Resolve the call EDGES for a manual source → (edge_tuples|None, meta). Handles both a live
+    CodeQL DB (runs calls.ql) and JSONL edges. meta carries an actionable error on failure."""
+    meta = {"mode": man["mode"], "resolved_edges": 0, "parsed": 0, "skipped": 0,
+            "error": None, "failed": False}
+    if man["mode"] == "codeql_db":
+        cql = man.get("cql_lang")
+        meta["cql_lang"] = cql
+        if not cql:
+            meta["error"] = "无法从 codeql-database.yml 读出 primaryLanguage。"; meta["failed"] = True
+            return None, meta
+        if not (Path(__file__).parent / "cg_queries" / cql / "calls.ql").exists():
+            meta["error"] = f"暂无 {cql} 的内置 CodeQL 调用图查询（cg_queries/{cql}/calls.ql 缺失）。"
+            meta["failed"] = True
+            return None, meta
+        res = _run_codeql_calls(Path(man["db"]), cql)
+        if res is None:
+            meta["error"] = f"CodeQL 调用图查询在所提供的 DB 上失败（检查 DB 是否完整、语言={cql}）。"
+            meta["failed"] = True
+            return None, meta
+        meta["parsed"] = len(res[0])
+        return (res[0] or None), meta
+    # JSONL edges
+    if not man.get("edges"):
+        meta["error"] = "未找到 edges.jsonl（JSONL 模式需要边文件）。"; meta["failed"] = True
+        return None, meta
+    tuples, m2 = _manual_edges(str(man["edges"]))
+    for k in ("parsed", "skipped", "error", "failed"):
+        if m2.get(k) is not None:
+            meta[k] = m2[k]
+    return (tuples or None), meta
+
+
+_MANUAL_DF_CACHE: Dict[str, List[dict]] = {}   # manual raw path -> loaded dataflow.jsonl flows
+
+
+def _manual_dataflow(man: dict, from_file: str, from_line: int, to_file: str, to_line: int) -> dict:
+    """Answer a source→sink taint query in manual mode: a live CodeQL DB runs dataflow.ql on
+    demand; JSONL mode looks the pair up in the operator's pre-computed dataflow.jsonl."""
+    if man["mode"] == "codeql_db":
+        cql = man.get("cql_lang")
+        if not cql or not (Path(__file__).parent / "cg_queries" / cql / "dataflow.ql").exists():
+            return {"available": False, "engine": "codeql-manual",
+                    "note": f"手动 CodeQL DB 模式：暂无 {cql or '?'} 的内置污点查询"
+                            f"（cg_queries/{cql}/dataflow.ql）；请用 cg_reachable + read_file 判断。"}
+        res = _run_codeql_dataflow(Path(man["db"]), cql, from_file, from_line, to_file, to_line)
+        if res is None:
+            return {"available": True, "engine": "codeql-manual",
+                    "error": "CodeQL 污点查询在所给 DB 上失败/超时；请 read_file 人工判断。"}
+        res["engine"] = "codeql-manual"
+        return res
+    # JSONL mode → look up the pre-computed flows
+    dfp = man.get("dataflow")
+    if not dfp:
+        return {"available": False, "engine": "codeql-manual",
+                "note": "手动 JSONL 模式未提供 dataflow.jsonl：只有调用边、无逐点污点；"
+                        "请用 cg_reachable（控制可达）+ read_file 判断污点是否真的流达。"}
+    flows = _MANUAL_DF_CACHE.get(man["raw"])
+    if flows is None:
+        flows = _load_manual_dataflow(Path(dfp))
+        _MANUAL_DF_CACHE[man["raw"]] = flows
+    hit = _manual_df_lookup(flows, from_file, from_line, to_file, to_line)
+    if hit:
+        path = hit.get("path") or []
+        return {"available": True, "engine": "codeql-manual", "tainted_flow": "yes",
+                "flow_count": 1, "paths": ([" → ".join(str(x) for x in path)] if path else []),
+                "note": "手动预计算污点流命中。" + (str(hit.get("note")) if hit.get("note") else "")}
+    return {"available": True, "engine": "codeql-manual", "tainted_flow": "none_found",
+            "flow_count": 0, "paths": [],
+            "note": "手动预计算污点流未命中该 source→sink（≠一定安全：可能不在离线查询覆盖内；请 read_file 核实）。"}
+
+
 def get_graph(root: Path) -> Optional[Graph]:
-    """Build ONE best-available call graph per project (cached), via the precision ladder:
-    Tree-sitter provides function spans; CodeQL (>Joern) refine the EDGES when available.
-    Both the reachability gate and the call_path/who_calls tools share this graph."""
+    """Build ONE best-available call graph per project (cached). Tree-sitter provides function
+    spans; then EDGES are refined by — in priority — a MANUAL operator-supplied graph/DB, else the
+    deterministic ladder CodeQL > Joern. The reachability gate and cg_* tools share this graph."""
     key = str(root)
     if key in _CACHE:
         return _CACHE.get(key)
@@ -342,12 +588,27 @@ def get_graph(root: Path) -> Optional[Graph]:
         if g is not None:
             lang = _primary_lang(root)
             g.lang = lang
-            try:
-                edges = _codeql_edges(root, lang) or _joern_edges(root, lang)   # CodeQL > Joern
-            except Exception:
-                edges = None
-            if edges is not None:
-                g.set_edges_from(edges[0], edges[1])   # (tuples, engine)
+            man = _MANUAL.get(key)
+            if man:
+                # MANUAL: replace edges with the operator's; keep TS spans/edges as a fallback if
+                # the source is missing / doesn't align (so we never lose the graph entirely).
+                ts_edges, ts_cs = g.edges, g.callsites
+                tuples, meta = _manual_call_edges(man)
+                g._manual = meta
+                if tuples:
+                    g.set_edges_from(tuples, "codeql-manual")
+                    meta["resolved_edges"] = g.edge_count()
+                if not tuples or meta["resolved_edges"] == 0:
+                    g.edges, g.callsites, g.engine = ts_edges, ts_cs, "treesitter"
+                    g._finalize()
+                    meta["failed"] = True
+            else:
+                try:
+                    edges = _codeql_edges(root, lang) or _joern_edges(root, lang)   # CodeQL > Joern
+                except Exception:
+                    edges = None
+                if edges is not None:
+                    g.set_edges_from(edges[0], edges[1])   # (tuples, engine)
         _CACHE[key] = g
     return _CACHE.get(key)
 
@@ -490,21 +751,15 @@ def _codeql_db(root: Path, cql_lang: str, codeql: str) -> Optional[Path]:
         return None
 
 
-def _codeql_edges(root: Path, lang: str):
-    if not getattr(settings, "enable_codeql_callgraph", True):
-        return None
-    cql_lang = _CODEQL_LANG.get(lang)
-    if not cql_lang:
-        return None
+def _run_codeql_calls(db: Path, cql_lang: str):
+    """Run cg_queries/<cql_lang>/calls.ql against an already-built DB → (edge_tuples,"codeql")
+    or None. Shared by the deterministic path (auto-built DB) and the MANUAL path (operator DB)."""
     codeql = shutil.which("codeql")
     ql = Path(__file__).parent / "cg_queries" / cql_lang / "calls.ql"
-    if not codeql or not ql.exists():
-        return None
-    db = _codeql_db(root, cql_lang, codeql)
-    if not db:
+    if not codeql or not ql.exists() or not db:
         return None
     packs = _codeql_packs(codeql)
-    out = db / "calls.bqrs"
+    out = Path(db) / "calls.bqrs"
     try:
         cmd = [codeql, "query", "run", "--database", str(db), "--output", str(out),
                f"--ram={settings.codeql_ram_mb}"]
@@ -523,6 +778,21 @@ def _codeql_edges(root: Path, lang: str):
         return (_parse_csv(dec.stdout), "codeql")
     except Exception:
         return None
+
+
+def _codeql_edges(root: Path, lang: str):
+    if not getattr(settings, "enable_codeql_callgraph", True):
+        return None
+    cql_lang = _CODEQL_LANG.get(lang)
+    if not cql_lang:
+        return None
+    codeql = shutil.which("codeql")
+    if not codeql:
+        return None
+    db = _codeql_db(root, cql_lang, codeql)
+    if not db:
+        return None
+    return _run_codeql_calls(db, cql_lang)
 
 
 def _joern_paths():
@@ -666,6 +936,11 @@ def dataflow(root: Path, from_file: str, from_line: int, to_file: str, to_line: 
     key = (str(root), from_file, int(from_line), to_file, int(to_line))
     if key in _DF_CACHE:
         return _DF_CACHE[key]
+    man = _MANUAL.get(str(root))
+    if man:
+        res = _manual_dataflow(man, from_file, from_line, to_file, to_line)
+        _DF_CACHE[key] = res
+        return res
     lang = _primary_lang(root)
     res = None
     if lang in _CODEQL_LANG:
@@ -682,12 +957,23 @@ def _codeql_dataflow(root: Path, lang: str, from_file: str, from_line: int,
     if not getattr(settings, "enable_codeql_callgraph", True):
         return None
     codeql = shutil.which("codeql")
-    ql = Path(__file__).parent / "cg_queries" / _CODEQL_LANG[lang] / "dataflow.ql"
-    if not codeql or not ql.exists():
+    if not codeql:
         return None
     db = _codeql_db(root, _CODEQL_LANG[lang], codeql)
     if not db:
         return None
+    return _run_codeql_dataflow(db, _CODEQL_LANG[lang], from_file, from_line, to_file, to_line)
+
+
+def _run_codeql_dataflow(db: Path, cql_lang: str, from_file: str, from_line: int,
+                         to_file: str, to_line: int) -> Optional[dict]:
+    """Run cg_queries/<cql_lang>/dataflow.ql against an already-built DB. Source/sink are passed
+    as external predicates so the query compiles once. Shared by the auto path + the MANUAL DB."""
+    codeql = shutil.which("codeql")
+    ql = Path(__file__).parent / "cg_queries" / cql_lang / "dataflow.ql"
+    if not codeql or not ql.exists() or not db:
+        return None
+    db = Path(db)
     packs = _codeql_packs(codeql)
     # per-call unique temp filenames → parallel dataflow queries never clobber each other's
     # source/sink CSVs or output (fixed names would corrupt concurrent results).
@@ -998,7 +1284,7 @@ def reachable_query(root: Path, file: str, line: int, entrypoints: List[dict]) -
 # --------------------------------------------------------------------------- #
 # Degradation reporting: which engine actually ran vs the best achievable, + why.
 # --------------------------------------------------------------------------- #
-_ENGINE_RANK = {"heuristic": 0, "treesitter": 1, "joern": 2, "codeql": 3}
+_ENGINE_RANK = {"heuristic": 0, "treesitter": 1, "joern": 2, "codeql": 3, "codeql-manual": 4}
 # per-language Joern frontend that shells out to an external interpreter
 _JOERN_FRONTEND_TOOL = {"php": "php", "javascript": "node", "typescript": "node", "go": "go"}
 
@@ -1036,12 +1322,28 @@ def _degrade_reason(root: Path, lang: str, engine: str, ideal: str) -> str:
 def status(root: Path) -> dict:
     """Report the call-graph engine actually in use vs the best achievable for this
     project's language, plus an actionable degradation reason (for the UI warning)."""
+    manual_selected = str(root) in _MANUAL
     try:
         g = get_graph(root)
     except Exception:
         g = None
     engine = g.engine if g is not None else "heuristic"
     lang = (g.lang if g is not None and g.lang else _primary_lang(root))
+    if manual_selected:
+        meta = getattr(g, "_manual", {}) if g is not None else {}
+        if engine == "codeql-manual" and meta.get("resolved_edges", 0) > 0:
+            return {"engine": "codeql-manual", "lang": lang, "ideal": "codeql-manual",
+                    "degraded": False, "reason": "",
+                    "manual": {"parsed": meta.get("parsed"), "skipped": meta.get("skipped"),
+                               "resolved_edges": meta.get("resolved_edges")}}
+        # manual chosen but the DB/file was missing / malformed / didn't align → honest degrade.
+        _src = "CodeQL DB" if meta.get("mode") == "codeql_db" else "边文件"
+        reason = meta.get("error") or (
+            f"手动{_src}产出 {meta.get('parsed', 0)} 条边，但没有一条能对齐到源码函数——请确认："
+            "① DB/边文件是从**被审同一份源码**构建；② 文件路径为项目相对路径(正斜杠)、"
+            "函数名与源码一致、行号为定义行。已回落 Tree-sitter。")
+        return {"engine": engine, "lang": lang, "ideal": "codeql-manual", "degraded": True,
+                "reason": reason, "manual": meta}
     ideal = _ideal_engine(lang)
     degraded = _ENGINE_RANK.get(engine, 0) < _ENGINE_RANK.get(ideal, 0)
     return {"engine": engine, "lang": lang, "ideal": ideal, "degraded": degraded,

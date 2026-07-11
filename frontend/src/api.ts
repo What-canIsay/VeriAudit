@@ -28,7 +28,7 @@ export const api = {
       body: JSON.stringify(body),
     }).then((r) => j<Project>(r)),
 
-  createTask: (pid: string, body: { depth: string }) =>
+  createTask: (pid: string, body: { depth: string; config?: Record<string, any> }) =>
     fetch(`${BASE}/projects/${pid}/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

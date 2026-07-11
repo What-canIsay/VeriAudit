@@ -51,6 +51,7 @@ async def run_audit(task_id: str) -> None:
         if not t:
             return
         depth = t.depth
+        cfg = t.config or {}
         proj = s.get(Project, t.project_id)
         root = Path(proj.workspace_path) if proj and proj.workspace_path else None
 
@@ -58,6 +59,14 @@ async def run_audit(task_id: str) -> None:
         await _set(task_id, status="failed", error="workspace not prepared")
         await emit(task_id, "task.finished", {"error": "workspace not prepared"})
         return
+
+    # Optional MANUAL call graph: the operator built the call graph offline (e.g. CodeQL with the
+    # right build command) and points us at a JSONL edges file. Register it BEFORE recon so the
+    # whole audit uses it instead of the deterministic ladder. Cleared in the finally below.
+    from . import callgraph
+    _manual_cg = cfg.get("callgraph_manual_path") if cfg.get("callgraph_manual") else None
+    if _manual_cg:
+        callgraph.set_manual(root, str(_manual_cg))
 
     await _set(task_id, status="running", phase="assess", started_at=datetime.now(timezone.utc))
     await _emit_status(task_id, "assess", "running")
@@ -98,6 +107,8 @@ async def run_audit(task_id: str) -> None:
         # tear down any persistent provisioned environment + drop the control handle
         await asyncio.to_thread(sandbox.stop_persistent, ctx.state.get("env"))
         control.remove(task_id)
+        if _manual_cg and root is not None:
+            callgraph.clear_manual(root)
 
 
 def _should_provision(ctx: AuditContext) -> bool:

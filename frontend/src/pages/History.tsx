@@ -100,6 +100,8 @@ function ProjectCard({ p, index, cfg, nav, onControl, onEdit, onErr, reload }: a
   const tag = projectTag(tasks);
 
   const [depth, setDepth] = useState("deep");
+  const [cgManual, setCgManual] = useState(false);
+  const [cgPath, setCgPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [page, setPage] = useState(0);
   const PAGE = 4;
@@ -109,7 +111,10 @@ function ProjectCard({ p, index, cfg, nav, onControl, onEdit, onErr, reload }: a
   async function startAudit() {
     setBusy(true);
     try {
-      const t = await api.createTask(p.id, { depth });
+      const cfgBody = cgManual && cgPath.trim()
+        ? { callgraph_manual: true, callgraph_manual_path: cgPath.trim() }
+        : undefined;
+      const t = await api.createTask(p.id, { depth, config: cfgBody });
       nav(`/tasks/${t.id}`);
     } catch (e: any) { onErr(String(e.message || e)); }
     finally { setBusy(false); }
@@ -146,14 +151,24 @@ function ProjectCard({ p, index, cfg, nav, onControl, onEdit, onErr, reload }: a
         )}
       </div>
 
+      <div className="va-proj-foot-cg">
+        <label className="va-check va-mono">
+          <input type="checkbox" checked={cgManual} onChange={(e) => setCgManual(e.target.checked)} />
+          <span>手动调用图</span>
+        </label>
+        {cgManual && (
+          <input className="va-input va-mono va-cg-path" value={cgPath} onChange={(e) => setCgPath(e.target.value)}
+            placeholder="CodeQL DB 目录 或 JSONL 路径 D:\\cg\\proj-db" />
+        )}
+      </div>
       <div className="va-proj-foot">
         <select className="va-depth va-mono" value={depth} onChange={(e) => setDepth(e.target.value)}>
           <option value="fast">fast</option>
           <option value="standard">standard</option>
           <option value="deep">deep</option>
         </select>
-        <button className="va-btn va-btn-line va-btn-sm" disabled={busy || !!running} onClick={startAudit}
-          title={running ? "有任务进行中" : ""}>
+        <button className="va-btn va-btn-line va-btn-sm" disabled={busy || !!running || (cgManual && !cgPath.trim())} onClick={startAudit}
+          title={running ? "有任务进行中" : (cgManual && !cgPath.trim() ? "请填写调用图边文件路径" : "")}>
           {busy ? "启动中…" : "开始审计"} {!busy && <span className="va-arrow">→</span>}
         </button>
       </div>
@@ -221,6 +236,8 @@ function ProjectModal({ mode, id, cfg, projects, onClose, onDone, nav }: any) {
   const [stype, setStype] = useState(existing?.source_type || "git_url");
   const [ref, setRef] = useState(existing?.source_ref || "");
   const [depth, setDepth] = useState("deep");
+  const [cgManual, setCgManual] = useState(false);
+  const [cgPath, setCgPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -234,7 +251,10 @@ function ProjectModal({ mode, id, cfg, projects, onClose, onDone, nav }: any) {
       } else {
         const p = await api.createProject({ name: name || "未命名项目", source_type: stype, source_ref: ref });
         onDone();
-        const t = await api.createTask(p.id, { depth });
+        const cfgBody = cgManual && cgPath.trim()
+          ? { callgraph_manual: true, callgraph_manual_path: cgPath.trim() }
+          : undefined;
+        const t = await api.createTask(p.id, { depth, config: cfgBody });
         nav(`/tasks/${t.id}`);
       }
     } catch (e: any) {
@@ -283,6 +303,25 @@ function ProjectModal({ mode, id, cfg, projects, onClose, onDone, nav }: any) {
                   ))}
                 </div>
               </label>
+            )}
+            {mode === "create" && (
+              <div className="va-field">
+                <span className="va-flabel">调用图</span>
+                <label className="va-check">
+                  <input type="checkbox" checked={cgManual} onChange={(e) => setCgManual(e.target.checked)} />
+                  <span>手动构建 —— 由你离线构建调用图并提供；关闭则系统自动构建（CodeQL&gt;Joern&gt;Tree-sitter）</span>
+                </label>
+                {cgManual && (
+                  <>
+                    <input className="va-input va-mono" value={cgPath} onChange={(e) => setCgPath(e.target.value)}
+                      placeholder="CodeQL DB 目录 或 JSONL 边文件/目录，如 D:\\cg\\proj-db" />
+                    <div className="va-hint va-mono">
+                      自动识别：① <b>CodeQL DB 目录</b>（含 codeql-database.yml）→ 调用图+污点一体，支持 java/go/csharp/cpp/ruby/python/js；
+                      ② <b>JSONL</b>（edges.jsonl + 可选 dataflow.jsonl）→ 语言无关兜底（含 PHP）。须与被审同一份源码构建；详见 docs/manual-callgraph.md。
+                    </div>
+                  </>
+                )}
+              </div>
             )}
             {mode === "edit" && (
               <div className="va-hint va-mono">修改来源后将重新载入代码库快照；审计深度在每次开始审计时选择。</div>
@@ -406,7 +445,13 @@ const CSS = `
 
 .va-proj-foot { display:flex; align-items:center; gap:10px; justify-content:flex-end;
   padding:12px 22px; border-top:1px solid var(--hair2); }
+.va-proj-foot-cg { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  padding:12px 22px 0; }
+.va-cg-path { flex:1 1 320px; font-size:12px; padding:6px 9px; }
 .va-depth { font-size:12px; padding:7px 10px; border:1px solid var(--hair); background:#fff; color:var(--ink); border-radius:0; }
+.va-check { display:inline-flex; align-items:flex-start; gap:8px; font-size:12.5px; color:var(--muted);
+  cursor:pointer; line-height:1.5; }
+.va-check input { margin-top:2px; accent-color:var(--signal); flex:none; }
 
 /* modal */
 .va-mask { position:fixed; inset:0; background:rgba(20,24,27,.28); backdrop-filter:blur(2px); z-index:40; }
