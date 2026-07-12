@@ -40,35 +40,7 @@ TOOL_SCHEMAS: List[dict] = [
         "name": "search_code", "description": "正则全局检索代码，定位污点源/路由注册/鉴权/净化函数定义等。",
         "parameters": {"type": "object", "properties": {
             "pattern": {"type": "string"}, "max": {"type": "integer"}}, "required": ["pattern"]}}},
-    {"type": "function", "function": {
-        "name": "check_reachability", "description": "判断某点 (file,line) 是否可被不可信输入触达：一次性综合① 调用图控制可达性（入口→sink 调用链，用于构造精确 PoC）与② 就近污点源/净化启发式。'不可达'≠安全。要证明某 source 确实把污点数据流到某 sink，用 cg_dataflow。",
-        "parameters": {"type": "object", "properties": {
-            "file": {"type": "string"}, "line": {"type": "integer"}}, "required": ["file", "line"]}}},
-    {"type": "function", "function": {
-        "name": "cg_overview", "description": "查看整项目调用图概览（引擎、函数/边数、对外入口函数）。",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "cg_callers", "description": "查谁调用了目标函数（反向）。target 用 'file:line'（推荐）或函数名。",
-        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
-    {"type": "function", "function": {
-        "name": "cg_callees", "description": "查目标函数调用了谁（正向）。",
-        "parameters": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}}},
-    {"type": "function", "function": {
-        "name": "cg_path", "description": "查两处代码之间的函数调用链（入口→sink），带调用点行号。",
-        "parameters": {"type": "object", "properties": {
-            "from_file": {"type": "string"}, "from_line": {"type": "integer"},
-            "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
-            "required": ["from_file", "from_line", "to_file", "to_line"]}}},
-    {"type": "function", "function": {
-        "name": "cg_subgraph", "description": "取某函数周围 radius 跳内的局部调用子图（有界）。",
-        "parameters": {"type": "object", "properties": {
-            "around": {"type": "string"}, "radius": {"type": "integer"}}, "required": ["around"]}}},
-    {"type": "function", "function": {
-        "name": "cg_dataflow", "description": "【污点/数据流,重】判断从疑似污点源(from)到危险汇聚点(to)是否存在真实数据流并给出路径——'控制可达'之上更强的'污点真的流到'。对核验/PoC 很有用,请对目标 source→sink 少量使用。from/to 用变量被使用/危险操作那一行。",
-        "parameters": {"type": "object", "properties": {
-            "from_file": {"type": "string"}, "from_line": {"type": "integer"},
-            "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
-            "required": ["from_file", "from_line", "to_file", "to_line"]}}},
+    *read_tools.CALLGRAPH_TOOL_SCHEMAS,   # identical to the Hunter's — shared, no drift
     {"type": "function", "function": {
         "name": "search_code_semantic", "description": (
             "语义/关键词混合检索整项目代码，用自然语言按【含义】定位跨文件上下文（如'该 sink 的净化函数定义'、"

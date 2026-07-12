@@ -70,6 +70,11 @@ fastapi(0.128.8)、uvicorn[standard](0.39.0)、sqlalchemy(2.0.51)、pydantic(2.1
 docker pull python:3.11-slim   # 沙箱/搭建基础镜像（~189MB，必需）
 docker pull node:20-slim       # 审 JS/TS 项目时的沙箱 CLI 镜像（按需）
 ```
+> 你**只需**拉上面两个基础镜像。首次做动态复现/环境搭建时，系统会基于 `python:3.11-slim`
+> **自动构建**一个"搭建/验证"镜像（apt 装入 gcc/clang/gdb/AddressSanitizer、netcat/socat、
+> sqlmap/strace/mysql 客户端等——支撑 Web 与**非 Web（原生·CLI·网络守护进程）**目标的动态验证与
+> gdb 调试）。该构建**需联网**、一次性、约 2~4 分钟，成品镜像约 **1.8GB**；**无需手动构建**，
+> Dockerfile 变化时会自动重建。运行时容器会被授予 `SYS_PTRACE`（供 gdb 调试目标），由系统自动设置，无需配置。
 
 **Step 3 · D:/Tools 外部引擎 + PATH**
 按 §1 表把 #4–#11 解压到对应 `D:/Tools/` 子目录，然后把这些目录加入 **系统环境变量 Path**：
@@ -226,7 +231,7 @@ cd backend
 | 前端弹“能力降级：调用图精度” | 对应语言没命中理想引擎——按横幅补 codeql / JDK17+ / php·go，或内存不足（调小 `TRACER_CONCURRENCY` 或加内存） |
 | 首屏「模式」显示 MOCK | `backend\.env` 未填 `VERIAUDIT_LLM_API_KEY` |
 | 「沙箱不可用」 | Docker 未启动或 `ENABLE_SANDBOX=false`；不影响静态审计 |
-| 首次动态验证/搭建慢 | 首次基于 `python:3.11-slim` 构建搭建镜像（约 1~2 分钟，一次性）；确认已 `docker pull python:3.11-slim node:20-slim` |
+| 首次动态验证/搭建慢 | 首次基于 `python:3.11-slim` 构建搭建/验证镜像（含 gcc/clang/gdb/ASan/netcat/socat 等工具链，约 2~4 分钟、成品约 1.8GB，一次性且需联网）；确认已 `docker pull python:3.11-slim node:20-slim` |
 | RAG 一直提示回落词法 | 未装 `fastembed` 或首次模型下载失败（需联网到 `D:/Tools/fastembed_cache`） |
 | 搭建官装不上运行时 | 需 `SANDBOX_ALLOW_NETWORK=true`（容器装包要出网） |
 | Git 克隆失败 | 仅允许 http/https 公网仓库；内网/`file://` 被 SSRF 防护拒绝 |

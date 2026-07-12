@@ -27,34 +27,11 @@ from .. import analysis, scanners
 from ..config import settings
 from ..knowledge import kb_lookup
 
-TOOL_SCHEMAS: List[dict] = [
-    {"type": "function", "function": {
-        "name": "list_files", "description": "列出目录结构（相对项目根），用于通读代码组织。",
-        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "read_file", "description": "阅读源码文件内容，可指定起止行。审计前务必先读关键文件。",
-        "parameters": {"type": "object", "properties": {
-            "path": {"type": "string"}, "start": {"type": "integer"}, "end": {"type": "integer"}},
-            "required": ["path"]}}},
-    {"type": "function", "function": {
-        "name": "search_code", "description": "正则全局检索代码，快速定位危险函数/关键字/污点源。",
-        "parameters": {"type": "object", "properties": {
-            "pattern": {"type": "string"}, "max": {"type": "integer"}}, "required": ["pattern"]}}},
-    {"type": "function", "function": {
-        "name": "map_attack_surface", "description": "识别技术栈并枚举对外入口点（HTTP路由/CLI/反序列化点等），即不可信输入进入系统之处。",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "semgrep_scan", "description": "运行 Semgrep 多语言模式 SAST，做快速广度普查，返回候选点列表（含 CWE/位置）。",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "codeql_scan", "description": "运行 CodeQL 语义数据流分析（重、精度高，适合深挖难以判断的数据流漏洞）。",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "secret_scan", "description": "运行 Gitleaks 检测硬编码密钥/凭据。",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {
-        "name": "dependency_scan", "description": "运行 OSV-Scanner 检测依赖中的已知 CVE（软件成分分析）。",
-        "parameters": {"type": "object", "properties": {}, "required": []}}},
+# Call-graph / reachability tools. Defined once here and shared by BOTH the Hunter
+# (TOOL_SCHEMAS below) and the Validator (verify_tools imports this) so the two agents
+# always expose the IDENTICAL set — including the `offset` pagination the dispatch supports
+# — and can never drift apart. Dispatch for all of these lives in tools.dispatch().
+CALLGRAPH_TOOL_SCHEMAS: List[dict] = [
     {"type": "function", "function": {
         "name": "check_reachability", "description": "判断某个可疑点 (file,line) 是否可被不可信输入触达：一次性综合① 调用图【控制可达性】（对外入口→sink 调用链，精度随引擎 CodeQL/Joern/Tree-sitter）与② 就近【污点源/净化】启发式。用于降误报、定位可打点。注：'不可达'≠安全（可能漏动态派发/框架路由）。要进一步证明某 source 确实把污点【数据流】到某 sink，请用更强的 cg_dataflow。",
         "parameters": {"type": "object", "properties": {
@@ -88,6 +65,37 @@ TOOL_SCHEMAS: List[dict] = [
             "from_file": {"type": "string"}, "from_line": {"type": "integer"},
             "to_file": {"type": "string"}, "to_line": {"type": "integer"}},
             "required": ["from_file", "from_line", "to_file", "to_line"]}}},
+]
+
+TOOL_SCHEMAS: List[dict] = [
+    {"type": "function", "function": {
+        "name": "list_files", "description": "列出目录结构（相对项目根），用于通读代码组织。",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "read_file", "description": "阅读源码文件内容，可指定起止行。审计前务必先读关键文件。",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"}, "start": {"type": "integer"}, "end": {"type": "integer"}},
+            "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "search_code", "description": "正则全局检索代码，快速定位危险函数/关键字/污点源。",
+        "parameters": {"type": "object", "properties": {
+            "pattern": {"type": "string"}, "max": {"type": "integer"}}, "required": ["pattern"]}}},
+    {"type": "function", "function": {
+        "name": "map_attack_surface", "description": "识别技术栈并枚举对外入口点（HTTP路由/CLI/反序列化点等），即不可信输入进入系统之处。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "semgrep_scan", "description": "运行 Semgrep 多语言模式 SAST，做快速广度普查，返回候选点列表（含 CWE/位置）。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "codeql_scan", "description": "运行 CodeQL 语义数据流分析（重、精度高，适合深挖难以判断的数据流漏洞）。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "secret_scan", "description": "运行 Gitleaks 检测硬编码密钥/凭据。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {
+        "name": "dependency_scan", "description": "运行 OSV-Scanner 检测依赖中的已知 CVE（软件成分分析）。",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
+    *CALLGRAPH_TOOL_SCHEMAS,
     {"type": "function", "function": {
         "name": "search_code_semantic", "description": (
             "语义/关键词混合检索【整项目代码】。\n"
