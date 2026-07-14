@@ -93,13 +93,13 @@ TOOL_SCHEMAS: List[dict] = [
             "confidence": {"type": "number"}, "rationale": {"type": "string"}},
             "required": ["vuln_type", "file", "line", "rationale"]}}},
     {"type": "function", "function": {
-        "name": "conclude", "description": "【核验完成时调用】给出最终结论：是否成立、是否已动态复现、依据、精确可运行的 PoC、修复建议。",
+        "name": "conclude", "description": "【核验完成时调用】给出最终结论：是否成立、是否已动态复现、依据、精确可运行的 PoC、修复建议。【判 confirmed/reproduced 前必过可利用性三关】：①设计使然（授权主体用刻意提供的功能、未跨信任边界）→rejected；②不安全但不可利用（无攻击者可控输入真实到达、或无真实安全影响）→rejected；③复现依赖现实中概率近乎为零的前提、或需你自行注入关键前提→不得判 reproduced=true/confirmed。三关的自查结论请写进 confidence_reason。",
         "parameters": {"type": "object", "properties": {
             "verdict": {"type": "string", "description": "confirmed | suspected | rejected"},
             "reproduced": {"type": "boolean", "description": "是否在沙箱中真实触发/复现"},
             "cvss_vector": {"type": "string", "description": "针对本漏洞【具体情况】的 CVSS v3.1 向量，形如 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N。请从该漏洞类别的基准出发，按你在核验中掌握的真实情况逐项调整：需登录才能触发→PR:L/H；仅内网/需本地→AV:A/L/P；需诱导用户点击→UI:R；能越权影响其他用户/组件→S:C；据实际能读取/篡改/破坏的程度定 C/I/A。仅在 verdict=confirmed/suspected 时给出。"},
-            "confidence_reason": {"type": "string"},
-            "poc": {"type": "string", "description": "精确、可复制运行的 PoC（完整请求含方法/路径/鉴权/参数/payload，或命令行）"},
+            "confidence_reason": {"type": "string", "description": "判定理由，须包含可利用性三关的自查结论：是否设计使然、攻击者可控输入是否真实到达且有真实影响、复现所依赖的前提在现实威胁模型下能否被攻击者自行满足。"},
+            "poc": {"type": "string", "description": "精确、可复制运行的 PoC（完整请求含方法/路径/鉴权/参数/payload，或命令行）。对于决定确认的漏洞，其是否可以导致攻击者利用其完成端到端的有效攻击这个问题，要有所说明。"},
             "remediation": {"type": "string"},
             "evidence": {"type": "string", "description": "关键证据摘要（如通用日志中的真实SQL、响应差异、strace 命中等）"},
             "setup_notes": {"type": "string", "description": "本次为完成复现所做的可复用搭建/鉴权准备（如：已创建的测试账号与密码、登录接口与会话获取方式、关键表结构），供后续漏洞核验复用，避免重复发现。"}},

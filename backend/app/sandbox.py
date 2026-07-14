@@ -184,6 +184,32 @@ def _py_files(root: Path) -> List[Tuple[str, str]]:
     return out
 
 
+def _native_scale(root: Path) -> Optional[dict]:
+    """Estimate the from-source build cost of a native (C/C++) target so the Provisioner can
+    decide UP FRONT whether a full/ASan rebuild is even feasible in the sandbox budget.
+    Returns None for non-native projects. `tier`:
+      · small  — full `-fsanitize=address,undefined -g` rebuild is fine.
+      · medium — plain build ok; scope ASan to a targeted harness if it drags.
+      · large  — do NOT attempt a full/ASan rebuild; use a prebuilt/apt binary + gdb,
+                 and build only per-candidate targeted harnesses (validator's job)."""
+    n = 0
+    for _p, lang in analysis.iter_source_files(root):
+        if lang in ("c", "cpp", "cxx", "cc"):
+            n += 1
+    if n < 30:
+        return None  # not a meaningfully native build target
+    if n >= 1500:
+        tier, advice = "large", ("超大型原生项目：全量/ASan 重编几乎必然超预算，【不要】尝试整树重编；"
+                                 "优先用 apt/系统预编译二进制或一次能编完的普通构建让目标可运行，"
+                                 "mark_ready(cli) 交给验证官【按候选编最小 harness / 用 gdb】做精确复现。")
+    elif n >= 300:
+        tier, advice = "medium", ("中型原生项目：普通构建通常可行；若加 ASan 后编译过慢，"
+                                  "就只对可疑组件编最小 harness 叠 ASan，别整树 ASan 重编。")
+    else:
+        tier, advice = "small", "小型原生项目：可直接 -fsanitize=address,undefined -g 全量重编。"
+    return {"native_source_files": n, "build_tier": tier, "advice": advice}
+
+
 def _detect_frameworks(pys: List[Tuple[str, str]]) -> List[str]:
     fw = set()
     for _rel, txt in pys:

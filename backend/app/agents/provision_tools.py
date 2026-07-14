@@ -69,7 +69,8 @@ TOOL_SCHEMAS: List[dict] = [
             "kind": {"type": "string", "description": "http（默认）| network | cli"},
             "proto": {"type": "string", "description": "network 协议：tcp（默认）| udp"},
             "target_cmd": {"type": "string", "description": "kind=cli 时，后续核验运行目标的命令模板（如 './build/parser @@'，@@ 代表输入文件占位）"},
-            "smoke_cmd": {"type": "string", "description": "kind=cli 时用来确认可执行的命令"}}, "required": []}}},
+            "smoke_cmd": {"type": "string", "description": "kind=cli 时用来确认可执行的命令"},
+            "build_note": {"type": "string", "description": "【给验证官的构建交接】源码树位置、当前二进制是否带 ASan/调试符号、以及复现建议（如：'超大型项目未整树重编，node 为 apt 预编译二进制无 ASan；请对可疑组件编最小 harness 叠 ASan，或用 gdb -batch 观察崩溃'）。会原样转达给验证官。"}}, "required": []}}},
     {"type": "function", "function": {
         "name": "give_up", "description": "【确实无法在预算内搭建时调用】放弃搭建并说明原因（下游将回落逐候选轻量复现/静态结论）。",
         "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}},
@@ -114,10 +115,14 @@ def dispatch(env: dict, ctx, name: str, args: dict) -> dict:
         ci = [p.name for p in ci_dir.glob("*.y*ml")] if ci_dir.exists() else []
         pys = sandbox._py_files(root)
         start = sandbox._derive_start(root, pys)
-        return {"docs_read_first": _find_docs(root),   # 部署/搭建说明通常在这些文档里，先读它们
-                "present": present, "ci_workflows": ci,
-                "frameworks": sandbox._detect_frameworks(pys),
-                "start_guess": {"command": start[0], "port": start[1]} if start else None}
+        out = {"docs_read_first": _find_docs(root),   # 部署/搭建说明通常在这些文档里，先读它们
+               "present": present, "ci_workflows": ci,
+               "frameworks": sandbox._detect_frameworks(pys),
+               "start_guess": {"command": start[0], "port": start[1]} if start else None}
+        native = sandbox._native_scale(root)
+        if native:   # C/C++ 目标：给出全量构建可行性判断，避免对超大项目盲目整树 ASan 重编
+            out["native_build"] = native
+        return out
 
     if name == "run_command":
         cmd = args.get("cmd", "")
@@ -178,6 +183,8 @@ def dispatch(env: dict, ctx, name: str, args: dict) -> dict:
         env["base_path"] = args.get("base_path", "") or ""
         if kind == "cli":
             env["target_cmd"] = args.get("target_cmd", "") or ""
+        if args.get("build_note"):
+            env["build_note"] = str(args.get("build_note"))
         res = sandbox.probe_ready(env, env.get("port"), kind=kind, proto=proto,
                                   smoke_cmd=args.get("smoke_cmd", ""))
         env["ready"] = bool(res.get("up"))

@@ -4,10 +4,14 @@
 这个目录会被我原样交给 VeriAudit（一个代码审计系统）的“手动调用图 → CodeQL DB”入口使用。
 VeriAudit 会从 codeql-database.yml 读出语言，并用它自己内置的 calls.ql / dataflow.ql 对这个 DB
 跑调用图和污点分析——**所以你只需产出完整可用的 DB，不需要、也不要写任何 CodeQL 查询。**
+本机的wsl中已经安装了codeql，你要使用本机的wsl中进行构建数据库。
+所有wsl需要缓存或下载的文件都落实到d盘的Tools目录下，不要存到c盘，你可以根据选择自行创建文件夹.
+编译时如果可以并行编译（优先保证稳定性）尽量并行来提高效率。
+
 
 ## 输入
-- 项目源码路径（本地）：<D:\path\to\project>
-- 期望输出 DB 目录：<D:\cg\proj-db>
+- 项目源码路径（本地）：D:\Tools\20个项目调研\Stirling-PDF
+- 期望输出 DB 目录：D:\Tools\20个项目调研\Stirling-PDF_codeqlDB
 
 ## 必须满足的硬约束
 2. **语言必须在 VeriAudit 支持列表内**：python、javascript（含 typescript，DB 语言标记即 javascript）、
@@ -30,7 +34,7 @@ VeriAudit 会从 codeql-database.yml 读出语言，并用它自己内置的 cal
    - cpp：**必须给能完整编译整个项目的真实命令**，如 `--command="cmake --build build"` 或
      `--command="make"`；CodeQL 靠追踪编译器提取，构建不全 = DB 不全。
 3. **建库**（用 --overwrite 以便重跑）：
-   codeql database create "<D:\cg\proj-db>" --language=<lang> --source-root="<D:\path\to\project>"
+   codeql database create "D:\Tools\20个项目调研\Stirling-PDF_codeqlDB" --language=<lang> --source-root="D:\Tools\20个项目调研\Stirling-PDF"
        [--build-mode=none | --command="<构建命令>"] --overwrite
 4. **验证完整性**：确认命令退出码 0；`<db>\codeql-database.yml` 里 `primaryLanguage:` 是期望语言；
 `<db>\db-<lang>\` 存在；`log/` 里没有致命 extractor 错误。可选：跑一个自带查询冒烟一下，

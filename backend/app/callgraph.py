@@ -337,14 +337,17 @@ def _build_ts(root: Path) -> Optional[Graph]:
             ts_lang = _TS_LANG.get(lang)
             if not ts_lang or ts_lang not in _FUNC_TYPES:
                 continue
+            # ISOLATE PER FILE: parse AND extract (a recursive AST walk that can hit
+            # Python's recursion limit on a deeply-nested file — real in FFmpeg) must not
+            # abort the whole graph. One bad file is skipped; the other thousands still build.
             try:
                 parser = get_parser(ts_lang)
                 code = p.read_bytes()
                 tree = parser.parse(code)
-            except Exception:
+                rel = analysis._rel(root, p)
+                defs, calls = _extract(tree.root_node, ts_lang)
+            except (Exception, RecursionError):
                 continue
-            rel = analysis._rel(root, p)
-            defs, calls = _extract(tree.root_node, ts_lang)
             spans = []
             for d in defs:
                 key = (rel, d["start"], d["name"])
@@ -390,6 +393,51 @@ def _db_language(db: Path) -> Optional[str]:
         return m.group(1).strip() if m else None
     except Exception:
         return None
+
+
+def _db_cli_version(db: Path) -> Optional[str]:
+    """The CodeQL CLI version that BUILT this DB (creationMetadata.cliVersion in the yml).
+    A DB built by a NEWER CLI than the local toolchain can carry a dbscheme the local
+    QL libraries can't read → query aborts with 'database is not compatible'."""
+    try:
+        text = (Path(db) / "codeql-database.yml").read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"cliVersion:\s*[\"']?([0-9]+(?:\.[0-9]+)+)", text)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
+
+
+def _codeql_cli_version() -> Optional[str]:
+    """Local CodeQL toolchain version, e.g. '2.25.6' (None if codeql not on PATH)."""
+    codeql = shutil.which("codeql")
+    if not codeql:
+        return None
+    try:
+        r = subprocess.run([codeql, "version", "--format=terse"],
+                           capture_output=True, text=True, timeout=30)
+        v = (r.stdout or "").strip()
+        return v if re.match(r"^[0-9]+(?:\.[0-9]+)+$", v) else None
+    except Exception:
+        return None
+
+
+def _version_tuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except Exception:
+        return (0,)
+
+
+def _db_incompat_reason(db: Path) -> Optional[str]:
+    """If the DB was built by a CLI newer than the local toolchain, return an actionable
+    Chinese message; else None. Used to replace the misleading '检查 DB 是否完整' error."""
+    db_v = _db_cli_version(db)
+    local_v = _codeql_cli_version()
+    if db_v and local_v and _version_tuple(db_v) > _version_tuple(local_v):
+        return (f"DB 由 CodeQL {db_v} 构建，本机工具链为 {local_v}（过旧），"
+                f"其 QL 库无法读取更新的 dbscheme。请将本机 CodeQL 升级到 >= {db_v} 后重试"
+                f"（或用本机 {local_v} 重新构建该 DB）。")
+    return None
 
 
 def _resolve_manual(path: str) -> dict:
@@ -553,7 +601,9 @@ def _manual_call_edges(man: dict) -> tuple:
             return None, meta
         res = _run_codeql_calls(Path(man["db"]), cql)
         if res is None:
-            meta["error"] = f"CodeQL 调用图查询在所提供的 DB 上失败（检查 DB 是否完整、语言={cql}）。"
+            incompat = _db_incompat_reason(Path(man["db"]))
+            meta["error"] = incompat or (
+                f"CodeQL 调用图查询在所提供的 DB 上失败（检查 DB 是否完整、语言={cql}）。")
             meta["failed"] = True
             return None, meta
         meta["parsed"] = len(res[0])
@@ -680,6 +730,82 @@ def _codeql_packs(codeql: str) -> Optional[str]:
     return str(p) if p.exists() else None
 
 
+def _available_ram_mb() -> int:
+    """Physical RAM currently free, in MB (0 if it can't be determined)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            ms = _MS(); ms.dwLength = ctypes.sizeof(_MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                return int(ms.ullAvailPhys // (1024 * 1024))
+        else:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(int(line.split()[1]) // 1024)
+    except Exception:
+        pass
+    return 0
+
+
+def _codeql_ram_mb() -> int:
+    """RAM cap (MB) to pass CodeQL's --ram. Honors an explicit CODEQL_RAM_MB override;
+    otherwise auto-sizes to ~70% of currently-free physical RAM, clamped to [2048, 8192].
+    The old fixed 2048 OOMs on large native DBs (curl ≈ needs 4-8GB); asking for more than
+    the machine has free makes CodeQL bail immediately, so we key off FREE (not total)."""
+    override = int(getattr(settings, "codeql_ram_mb", 0) or 0)
+    if override > 0:
+        return max(2048, override)
+    avail = _available_ram_mb()
+    if avail <= 0:
+        return 4096
+    return int(max(2048, min(int(avail * 0.7), 8192)))
+
+
+def _kill_tree(pid: int) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, timeout=30)
+        else:
+            import signal
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def _run_codeql_proc(cmd: list, timeout: int, text: bool = False):
+    """Run a CodeQL command, GUARANTEEING the whole process tree dies on timeout. CodeQL
+    spawns a java evaluator child; a plain subprocess.run timeout kills only the launcher,
+    leaving the java child alive — it keeps holding RAM and the DB cache .lock and wedges
+    every later query (and the audit). We start a new process group and kill the tree."""
+    kw = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_codeql_env())
+    if text:
+        kw["text"] = True
+    if os.name == "nt":
+        kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True
+    p = subprocess.Popen(cmd, **kw)
+    try:
+        out, err = p.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        _kill_tree(p.pid)
+        try:
+            p.communicate(timeout=10)
+        except Exception:
+            pass
+        raise
+
+
 _CODEQL_ENV: Optional[dict] = None
 
 
@@ -774,7 +900,7 @@ def _codeql_db(root: Path, cql_lang: str, codeql: str) -> Optional[Path]:
         cache.parent.mkdir(parents=True, exist_ok=True)
         try:
             r = subprocess.run([codeql, "database", "create", str(cache), f"--language={cql_lang}",
-                                f"--source-root={root}", "--overwrite", f"--ram={settings.codeql_ram_mb}"],
+                                f"--source-root={root}", "--overwrite", f"--ram={_codeql_ram_mb()}"],
                                capture_output=True, timeout=_codeql_db_timeout(root), env=_codeql_env())
             if r.returncode == 0 and _db_complete(cache):
                 return cache
@@ -796,15 +922,14 @@ def _run_codeql_calls(db: Path, cql_lang: str):
     out = Path(db) / "calls.bqrs"
     try:
         cmd = [codeql, "query", "run", "--database", str(db), "--output", str(out),
-               f"--ram={settings.codeql_ram_mb}"]
+               f"--ram={_codeql_ram_mb()}"]
         if packs:
             cmd += ["--additional-packs", packs]
         cmd.append(str(ql))
-        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec, env=_codeql_env())
+        r = _run_codeql_proc(cmd, settings.codeql_timeout_sec)
         if r.returncode != 0:
             return None
-        dec = subprocess.run([codeql, "bqrs", "decode", "--format=csv", str(out)],
-                             capture_output=True, text=True, timeout=120, env=_codeql_env())
+        dec = _run_codeql_proc([codeql, "bqrs", "decode", "--format=csv", str(out)], 120, text=True)
         if dec.returncode != 0:
             return None
         # query SUCCEEDED → trust CodeQL edges even if empty (flat apps have no internal
@@ -933,8 +1058,16 @@ def _joern_edges(root: Path, lang: str):
     try:
         script = Path(str(cpg) + ".edges.sc")
         cpg_fwd = str(cpg).replace("\\", "/")
+        # Load the base CPG RAW (CpgLoader.load — no overlays) then apply ONLY
+        # applyDefaultOverlays (Base/ControlFlow/TypeRel/CallGraph). We deliberately do NOT use
+        # importCpg/loadCpg: those re-apply the console's *full* default overlays including the
+        # OSS **dataflow** (ReachingDef) overlay, which OOMs on large/pathological apps (e.g.
+        # MacCMS's 10k+ methods + 1.4MB generated array files) and is USELESS for call edges.
+        # applyDefaultOverlays resolves `.callee` via the cheap callgraph linker WITHOUT dataflow.
         script.write_text(
-            f'importCpg("{cpg_fwd}")\n'
+            'import io.shiftleft.semanticcpg.language._\n'
+            f'val cpg = io.shiftleft.codepropertygraph.cpgloading.CpgLoader.load("{cpg_fwd}")\n'
+            'io.joern.x2cpg.X2Cpg.applyDefaultOverlays(cpg)\n'
             'cpg.call.foreach { c =>\n'
             '  val caller = c.method\n'
             '  c.callee.filterNot(_.isExternal).foreach { callee =>\n'
@@ -944,8 +1077,13 @@ def _joern_edges(root: Path, lang: str):
             ' c.lineNumber.getOrElse(-1))\n'
             '  }\n'
             '}\n', encoding="utf-8")
+        # Give the query JVM a real heap (the callgraph overlay + traversal on a large CPG needs
+        # it); the inherited `env` has no -Xmx, so it would otherwise use a small default heap.
+        qenv = dict(env)
+        heap = int(getattr(settings, "joern_ram_mb", 4096))
+        qenv["JAVA_TOOL_OPTIONS"] = (qenv.get("JAVA_TOOL_OPTIONS", "") + f" -Xmx{heap}m").strip()
         r = subprocess.run(_joern_launch(joern, "joern") + ["--script", str(script)],
-                           env=env, capture_output=True, timeout=_joern_query_timeout(root))
+                           env=qenv, capture_output=True, timeout=_joern_query_timeout(root))
         rows = []
         for line in (r.stdout or b"").decode("utf-8", "replace").splitlines():
             if line.startswith("EDGE\t"):
@@ -1019,16 +1157,15 @@ def _run_codeql_dataflow(db: Path, cql_lang: str, from_file: str, from_line: int
         src.write_text(f"{from_file.replace(chr(92), '/')},{int(from_line)}\n", encoding="utf-8")
         snk.write_text(f"{to_file.replace(chr(92), '/')},{int(to_line)}\n", encoding="utf-8")
         cmd = [codeql, "query", "run", "--database", str(db), "--output", str(out),
-               f"--ram={settings.codeql_ram_mb}",
+               f"--ram={_codeql_ram_mb()}",
                f"--external=srcloc={src}", f"--external=snkloc={snk}"]
         if packs:
             cmd += ["--additional-packs", packs]
         cmd.append(str(ql))
-        r = subprocess.run(cmd, capture_output=True, timeout=settings.codeql_timeout_sec, env=_codeql_env())
+        r = _run_codeql_proc(cmd, settings.codeql_timeout_sec)
         if r.returncode != 0:
             return None
-        dec = subprocess.run([codeql, "bqrs", "decode", "--format=csv", str(out)],
-                             capture_output=True, text=True, timeout=120, env=_codeql_env())
+        dec = _run_codeql_proc([codeql, "bqrs", "decode", "--format=csv", str(out)], 120, text=True)
         if dec.returncode != 0:
             return None
         import csv as _csv
@@ -1371,11 +1508,16 @@ def status(root: Path) -> dict:
                     "manual": {"parsed": meta.get("parsed"), "skipped": meta.get("skipped"),
                                "resolved_edges": meta.get("resolved_edges")}}
         # manual chosen but the DB/file was missing / malformed / didn't align → honest degrade.
-        _src = "CodeQL DB" if meta.get("mode") == "codeql_db" else "边文件"
-        reason = meta.get("error") or (
-            f"手动{_src}产出 {meta.get('parsed', 0)} 条边，但没有一条能对齐到源码函数——请确认："
-            "① DB/边文件是从**被审同一份源码**构建；② 文件路径为项目相对路径(正斜杠)、"
-            "函数名与源码一致、行号为定义行。已回落 Tree-sitter。")
+        man = _MANUAL.get(str(root), {})
+        _src = "CodeQL DB" if (meta.get("mode") or man.get("mode")) == "codeql_db" else "边文件"
+        if not meta:   # get_graph returned None → the base Tree-sitter graph itself failed to build
+            reason = (f"已提供手动{_src}，但调用图的【基础 Tree-sitter 图构建失败】，无法承载手动边（已回落启发式）。"
+                      "通常是工作区源码不完整或超大/异常文件导致——请确认源码完整、可解析。")
+        else:
+            reason = meta.get("error") or (
+                f"手动{_src}产出 {meta.get('parsed', 0)} 条边，但没有一条能对齐到源码函数——请确认："
+                "① DB/边文件是从**被审同一份源码**构建；② 文件路径为项目相对路径(正斜杠)、"
+                "函数名与源码一致、行号为定义行。已回落 Tree-sitter。")
         return {"engine": engine, "lang": lang, "ideal": "codeql-manual", "degraded": True,
                 "reason": reason, "manual": meta}
     ideal = _ideal_engine(lang)

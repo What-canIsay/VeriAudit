@@ -455,10 +455,14 @@ def _env_desc(env: dict) -> str:
                 f"用 net_send(port={env.get('port')}, proto='{proto}', payload=...) 发送自定义协议报文来交互与复现；http_probe 不适用。")
     if kind == "cli":
         tc = env.get("target_cmd") or "（见项目构建产物）"
+        note = env.get("build_note")
+        note_line = f"\n【环境搭建官的构建交接】{note}" if note else ""
         return (f"目标是【原生/CLI/库类程序】，无常驻服务。运行目标的方式：{tc}。"
                 f"用 run_target(cmd=..., stdin/stdin_b64/input_files=...) 喂构造好的畸形输入实弹复现——"
                 f"触发 SIGSEGV/SIGABRT 或 ASan/UBSan 报告即为决定性证据。"
-                f"建议先用 run_command 以 -fsanitize=address,undefined -g 重编目标或编一个只调用可疑函数的小 harness。")
+                f"【复现精度按项目规模选】：小项目可 -fsanitize=address,undefined -g 全量重编；"
+                f"大型项目（如 Node）【别整树重编】，只针对可疑源文件编一个最小 harness 叠 ASan，"
+                f"或用现成二进制 + gdb -batch 观察崩溃栈帧（无 ASan 也是决定性证据）。{note_line}")
     return (f"目标应用已在容器内运行（HTTP，端口 {env.get('port')}，基础路径 '{env.get('base_path', '')}'）。"
             f"用 http_probe 发精确请求复现。")
 
