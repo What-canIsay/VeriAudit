@@ -1,1 +1,0 @@
-Provide a crafted serialized payload; oracle: gadget side-effect (marker file/command).

@@ -1,1 +1,0 @@
-Use `../../etc/passwd` (or `..\..\windows\win.ini`); oracle: file contents leaked (e.g. `root:`).
