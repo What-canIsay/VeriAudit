@@ -18,12 +18,3 @@ frontend/*.tsbuildinfo
 
 
 backend/workspace/
-
-一、基于大模型智能体的开源项目安全缺陷自动审计和验证系统.txt
-
-shortTermResults/
-samples/BenchmarkPython/
-
-docs/ppt_build
-docs/PPT风格
-docs/imgs
